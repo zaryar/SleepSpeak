@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -13,7 +12,7 @@ class StorageService {
   final LoggerService _logger = LoggerService();
   final WavAnalyzerService _wavAnalyzer = WavAnalyzerService();
 
-  static const String _webStorageKey = 'sleep_sessions_web_storage';
+  static const String _webStorageKey = 'sleep_sessions_web_storage_v2';
 
   Future<AppDirectory?> get _recordingsDir async {
     if (kIsWeb) return null;
@@ -224,60 +223,34 @@ class StorageService {
 
   /// Generates realistic interactive demo sleep sessions for web visitors
   List<RecordingSession> _createWebDemoSessions() {
-    final rand = Random(42);
+    // 10-second real playable audio session (assets/audio/demo_sleep.wav)
+    // 50 samples (200ms per sample for 10s duration)
+    final List<double> amp10s = [
+      -50.5, -51.2, -50.8, -50.6, -51.0, -50.9, -51.1, -50.7, -50.9, -51.0, // 0-2s quiet background
+      -50.8, -50.7, -51.0, -50.9, -51.2,                                    // 2-3s quiet background
+      -38.0, -32.5, -26.4, -22.1, -20.5, -19.8, -20.2, -21.5, -23.8, -27.2, // 3-5s SLEEP TALKING SPIKE
+      -31.0, -35.2, -37.8,                                                 // 5-5.6s fading
+      -50.6, -51.0, -50.8, -50.9, -51.1, -50.7, -50.9, -51.0, -50.8,        // 5.6-7.4s quiet
+      -36.2, -31.4, -30.8, -32.5, -36.0,                                    // 7.4-8.4s MURMUR SPIKE
+      -50.8, -51.2, -50.9, -51.0, -50.8, -51.1, -50.9, -51.0               // 8.4-10.0s quiet
+    ];
 
-    List<double> generateNightAmplitudes(int minutes, List<int> spikeMinuteIndices) {
-      final samplesCount = minutes * 60 * 5; // 5 samples per sec
-      final result = List<double>.filled(samplesCount, -52.0);
-      
-      for (int i = 0; i < samplesCount; i++) {
-        result[i] = -52.0 + (rand.nextDouble() * 6.0 - 3.0);
-      }
-
-      for (final spikeMin in spikeMinuteIndices) {
-        final centerIdx = spikeMin * 60 * 5;
-        final spikeLen = (3 + rand.nextInt(5)) * 5; // 3-8 seconds
-        final peakDb = -18.0 - rand.nextDouble() * 14.0; // -18 dB to -32 dB
-        
-        for (int k = 0; k < spikeLen && (centerIdx + k) < samplesCount; k++) {
-          result[centerIdx + k] = peakDb + (rand.nextDouble() * 4.0 - 2.0);
-        }
-      }
-      return result;
-    }
-
-    final time1 = DateTime.now().subtract(const Duration(days: 1, hours: 8));
-    final amp1 = generateNightAmplitudes(435, [45, 112, 190, 260, 315, 390]);
+    final time1 = DateTime.now().subtract(const Duration(minutes: 45));
     var session1 = RecordingSession(
-      id: 'demo_session_1',
-      title: 'Schlaf vom gestern Nacht (Demo)',
-      filePath: 'web_memory://demo_1.wav',
+      id: 'demo_session_playable',
+      title: '🔊 10s Demo-Aufnahme (Hörbar & Interaktiv)',
+      filePath: 'assets/audio/demo_sleep.wav',
       startTime: time1,
-      duration: const Duration(hours: 7, minutes: 15),
-      amplitudeHistory: amp1,
+      duration: const Duration(seconds: 10),
+      amplitudeHistory: amp10s,
       isFavorite: true,
       isFinalized: true,
-      fileSizeBytes: 835200000,
+      fileSizeBytes: 320044,
       detectedEvents: [],
     );
     session1 = session1.copyWith(detectedEvents: session1.recalculateEvents(-38.0));
 
-    final time2 = DateTime.now().subtract(const Duration(days: 2, hours: 8, minutes: 30));
-    final amp2 = generateNightAmplitudes(400, [75, 210, 340]);
-    var session2 = RecordingSession(
-      id: 'demo_session_2',
-      title: 'Schlaf vom Vorgestern (Demo)',
-      filePath: 'web_memory://demo_2.wav',
-      startTime: time2,
-      duration: const Duration(hours: 6, minutes: 40),
-      amplitudeHistory: amp2,
-      isFavorite: false,
-      isFinalized: true,
-      fileSizeBytes: 768000000,
-      detectedEvents: [],
-    );
-    session2 = session2.copyWith(detectedEvents: session2.recalculateEvents(-38.0));
-
-    return [session1, session2];
+    return [session1];
   }
 }
+

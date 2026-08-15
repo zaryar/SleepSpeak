@@ -41,6 +41,7 @@ config/
 *.ogg
 *.flac
 *.pcm
+!assets/audio/**
 
 # Flutter / Dart / Pub
 **/doc/api/

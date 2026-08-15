@@ -63,16 +63,20 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
     _initAudioPlayer();
   }
 
-  Timer? _webPlaybackTimer;
-
   Future<void> _initAudioPlayer() async {
-    if (!kIsWeb) {
-      try {
-        final file = AppFile(_currentSession.filePath);
+    try {
+      final path = _currentSession.filePath;
+      if (path.startsWith('assets/') || path.startsWith('asset://')) {
+        final clean = path.replaceFirst('asset://', '');
+        await _audioPlayer.setAsset(clean);
+      } else if (!kIsWeb) {
+        final file = AppFile(path);
         if (await file.exists()) {
-          await _audioPlayer.setFilePath(_currentSession.filePath);
+          await _audioPlayer.setFilePath(path);
         }
-      } catch (_) {}
+      }
+    } catch (e) {
+      debugPrint('AudioPlayer init error: $e');
     }
 
     _audioPlayer.positionStream.listen((pos) {
@@ -142,40 +146,19 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
   }
 
   Future<void> _togglePlayback() async {
-    if (kIsWeb) {
-      setState(() {
-        _isPlaying = !_isPlaying;
-      });
-      if (_isPlaying) {
-        _webPlaybackTimer?.cancel();
-        _webPlaybackTimer = Timer.periodic(const Duration(milliseconds: 100), (t) {
-          final next = _positionNotifier.value + const Duration(milliseconds: 100);
-          if (next >= _currentSession.duration) {
-            _webPlaybackTimer?.cancel();
-            setState(() => _isPlaying = false);
-            _positionNotifier.value = Duration.zero;
-          } else {
-            _positionNotifier.value = next;
-          }
-        });
-      } else {
-        _webPlaybackTimer?.cancel();
-      }
-      return;
-    }
-
     if (_isPlaying) {
       await _audioPlayer.pause();
     } else {
+      if (_audioPlayer.processingState == ProcessingState.completed) {
+        await _audioPlayer.seek(Duration.zero);
+      }
       await _audioPlayer.play();
     }
   }
 
   Future<void> _seekTo(Duration target) async {
     _positionNotifier.value = target;
-    if (!kIsWeb) {
-      await _audioPlayer.seek(target);
-    }
+    await _audioPlayer.seek(target);
   }
 
   void _selectAndPlayEvent(DetectedEvent event) async {
