@@ -1,10 +1,11 @@
 import 'dart:async';
-import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:record/record.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
-import 'notification_service.dart';
 import 'battery_service.dart';
 import 'logger_service.dart';
+import 'notification_service.dart';
+import 'platform_file/platform_file.dart';
 
 enum RecordingState { stopped, testingMic, recordingSleep }
 
@@ -39,9 +40,13 @@ class AudioRecorderService {
   Function(Duration duration, List<double> history)? onPeriodicFlush;
 
   Future<bool> hasMicPermission() async {
-    final perm = await _recorder.hasPermission();
-    await _logger.log('Mic permission check: $perm');
-    return perm;
+    try {
+      final perm = await _recorder.hasPermission();
+      await _logger.log('Mic permission check: $perm');
+      return perm;
+    } catch (_) {
+      return true;
+    }
   }
 
   /// Starts live mic test mode (for whisper / clap level feedback before sleep)
@@ -54,22 +59,28 @@ class AudioRecorderService {
     _state = RecordingState.testingMic;
     _amplitudeStreamController = StreamController<double>.broadcast();
 
-    // Start silent temporary recording to sample mic amplitude
-    final tempPath = '${Directory.systemTemp.path}/mic_test.wav';
-    await _recorder.start(
-      const RecordConfig(
-        encoder: AudioEncoder.wav,
-        sampleRate: 16000,
-        numChannels: 1,
-      ),
-      path: tempPath,
-    );
+    // Start temporary recording to sample mic amplitude
+    final tempPath = kIsWeb ? '' : '${getSystemTempPath()}/mic_test.wav';
+    try {
+      await _recorder.start(
+        const RecordConfig(
+          encoder: AudioEncoder.wav,
+          sampleRate: 16000,
+          numChannels: 1,
+        ),
+        path: tempPath,
+      );
+    } catch (e) {
+      await _logger.log('Live mic test start error: $e');
+    }
 
     _amplitudeTimer = Timer.periodic(const Duration(milliseconds: 150), (_) async {
       if (_state == RecordingState.testingMic) {
-        final amp = await _recorder.getAmplitude();
-        _currentDb = amp.current.clamp(-60.0, 0.0);
-        _amplitudeStreamController?.add(_currentDb);
+        try {
+          final amp = await _recorder.getAmplitude();
+          _currentDb = amp.current.clamp(-60.0, 0.0);
+          _amplitudeStreamController?.add(_currentDb);
+        } catch (_) {}
       }
     });
   }
@@ -80,7 +91,9 @@ class AudioRecorderService {
     await _logger.log('Stopped Live Mic Test Mode');
     _amplitudeTimer?.cancel();
     _amplitudeTimer = null;
-    await _recorder.stop();
+    try {
+      await _recorder.stop();
+    } catch (_) {}
     _amplitudeStreamController?.close();
     _amplitudeStreamController = null;
     _state = RecordingState.stopped;
@@ -106,60 +119,58 @@ class AudioRecorderService {
     _amplitudeHistory.clear();
     _amplitudeStreamController = StreamController<double>.broadcast();
 
-    // Keep CPU awake during sleep with screen locked
-    try {
-      await WakelockPlus.enable();
-      await _logger.log('Wakelock enabled successfully.');
-    } catch (e) {
-      await _logger.log('Wakelock enable warning: $e');
+    // Mobile background services
+    if (!kIsWeb) {
+      try {
+        await WakelockPlus.enable();
+        await _logger.log('Wakelock enabled successfully.');
+      } catch (e) {
+        await _logger.log('Wakelock enable warning: $e');
+      }
+
+      try {
+        await _notificationService.init();
+        await _notificationService.showRecordingNotification(durationText: '00:00:00');
+        await _logger.log('Foreground notification started.');
+      } catch (e) {
+        await _logger.log('Notification error: $e');
+      }
+
+      _batteryService.startMonitoring(onLowBattery: () async {
+        await _logger.log('CRITICAL: Low battery detected (<5%)! Emergency saving...');
+        await emergencyStopAndSave();
+      });
     }
 
-    // Init notification
     try {
-      await _notificationService.init();
-      await _notificationService.showRecordingNotification(durationText: '00:00:00');
-      await _logger.log('Foreground notification started.');
-    } catch (e) {
-      await _logger.log('Notification error: $e');
-    }
-
-    // Start Low Battery Monitoring (< 5%)
-    _batteryService.startMonitoring(onLowBattery: () async {
-      await _logger.log('CRITICAL: Low battery detected (<5%)! Emergency saving...');
-      await emergencyStopAndSave();
-    });
-
-    try {
-      // Start recording audio (16kHz mono WAV for high quality & easy trimming)
       await _recorder.start(
         const RecordConfig(
           encoder: AudioEncoder.wav,
           sampleRate: 16000,
           numChannels: 1,
         ),
-        path: targetFilePath,
+        path: kIsWeb ? '' : targetFilePath,
       );
-      await _logger.log('AudioRecorder engine started writing to file.');
+      await _logger.log('AudioRecorder engine started writing.');
     } catch (e) {
       await _logger.log('FATAL: AudioRecorder.start exception: $e');
       _state = RecordingState.stopped;
       return false;
     }
 
-    // Timer for duration, notifications update, and 30s auto-flush to disk
     _recordingTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
       _elapsedDuration = Duration(seconds: timer.tick);
       final formattedDuration = _formatDuration(_elapsedDuration);
-      _notificationService.showRecordingNotification(durationText: formattedDuration);
+      if (!kIsWeb) {
+        _notificationService.showRecordingNotification(durationText: formattedDuration);
+      }
 
-      // Every 30 seconds: Periodic auto-flush metadata to disk so no data is lost on crash
       if (timer.tick % 30 == 0) {
         onPeriodicFlush?.call(_elapsedDuration, List.from(_amplitudeHistory));
         _logger.log('Periodic auto-flush at duration: $formattedDuration (${_amplitudeHistory.length} samples)');
       }
     });
 
-    // Timer for amplitude sampling (every 200ms = 5 samples/sec)
     _amplitudeTimer = Timer.periodic(const Duration(milliseconds: 200), (_) async {
       if (_state == RecordingState.recordingSleep) {
         try {
@@ -187,13 +198,16 @@ class AudioRecorderService {
     _recordingTimer = null;
     _amplitudeTimer?.cancel();
     _amplitudeTimer = null;
-    _batteryService.stopMonitoring();
+    
+    if (!kIsWeb) {
+      _batteryService.stopMonitoring();
+    }
 
     String? path;
     try {
       path = await _recorder.stop();
-      if (path != null) {
-        final f = File(path);
+      if (!kIsWeb && path != null) {
+        final f = AppFile(path);
         final size = await f.length();
         await _logger.log('Recording stopped cleanly. Saved file size: $size bytes ($path)');
       }
@@ -201,10 +215,12 @@ class AudioRecorderService {
       await _logger.log('Recorder stop exception: $e');
     }
 
-    await _notificationService.cancelRecordingNotification();
-    try {
-      await WakelockPlus.disable();
-    } catch (_) {}
+    if (!kIsWeb) {
+      await _notificationService.cancelRecordingNotification();
+      try {
+        await WakelockPlus.disable();
+      } catch (_) {}
+    }
 
     _amplitudeStreamController?.close();
     _amplitudeStreamController = null;

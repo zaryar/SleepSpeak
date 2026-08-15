@@ -3,6 +3,8 @@
 > **Smart, privacy-first sleep talk & noise recorder for Flutter.**  
 > Automatically records overnight sleep audio, analyzes noise spikes (sleep talking, snoring, movement), and lets you quickly scrub through detected audio events without cloud dependencies.
 
+### 🌐 Live Web Demo: [https://zaryar.github.io/SleepSpeak/](https://zaryar.github.io/SleepSpeak/)
+Teste die Schlafanalyse, den interaktiven Wellenform-Scrubber und den Schwellenwert-Filter direkt online im Browser!
 ---
 
 ## ✨ Features

@@ -1,9 +1,11 @@
-import 'dart:io';
+import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:share_plus/share_plus.dart';
 import '../../../data/repositories/recording_repository.dart';
 import '../../../data/services/audio_trimmer_service.dart';
+import '../../../data/services/platform_file/platform_file.dart';
 import '../../../data/services/storage_service.dart';
 import '../../../domain/models/detected_event.dart';
 import '../../../domain/models/recording_session.dart';
@@ -61,26 +63,32 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
     _initAudioPlayer();
   }
 
+  Timer? _webPlaybackTimer;
+
   Future<void> _initAudioPlayer() async {
-    final file = File(_currentSession.filePath);
-    if (await file.exists()) {
-      await _audioPlayer.setFilePath(_currentSession.filePath);
-
-      _audioPlayer.positionStream.listen((pos) {
-        _positionNotifier.value = pos;
-      });
-
-      _audioPlayer.playerStateStream.listen((state) {
-        if (mounted) {
-          final playing = state.playing && state.processingState != ProcessingState.completed;
-          if (_isPlaying != playing) {
-            setState(() {
-              _isPlaying = playing;
-            });
-          }
+    if (!kIsWeb) {
+      try {
+        final file = AppFile(_currentSession.filePath);
+        if (await file.exists()) {
+          await _audioPlayer.setFilePath(_currentSession.filePath);
         }
-      });
+      } catch (_) {}
     }
+
+    _audioPlayer.positionStream.listen((pos) {
+      _positionNotifier.value = pos;
+    });
+
+    _audioPlayer.playerStateStream.listen((state) {
+      if (mounted) {
+        final playing = state.playing && state.processingState != ProcessingState.completed;
+        if (_isPlaying != playing) {
+          setState(() {
+            _isPlaying = playing;
+          });
+        }
+      }
+    });
   }
 
   @override
@@ -134,6 +142,28 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
   }
 
   Future<void> _togglePlayback() async {
+    if (kIsWeb) {
+      setState(() {
+        _isPlaying = !_isPlaying;
+      });
+      if (_isPlaying) {
+        _webPlaybackTimer?.cancel();
+        _webPlaybackTimer = Timer.periodic(const Duration(milliseconds: 100), (t) {
+          final next = _positionNotifier.value + const Duration(milliseconds: 100);
+          if (next >= _currentSession.duration) {
+            _webPlaybackTimer?.cancel();
+            setState(() => _isPlaying = false);
+            _positionNotifier.value = Duration.zero;
+          } else {
+            _positionNotifier.value = next;
+          }
+        });
+      } else {
+        _webPlaybackTimer?.cancel();
+      }
+      return;
+    }
+
     if (_isPlaying) {
       await _audioPlayer.pause();
     } else {
@@ -142,7 +172,10 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
   }
 
   Future<void> _seekTo(Duration target) async {
-    await _audioPlayer.seek(target);
+    _positionNotifier.value = target;
+    if (!kIsWeb) {
+      await _audioPlayer.seek(target);
+    }
   }
 
   void _selectAndPlayEvent(DetectedEvent event) async {
@@ -242,12 +275,19 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
       return;
     }
 
+    if (kIsWeb) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Audio-Schnipsel-Export ist in der Android/iOS App verfügbar.')),
+      );
+      return;
+    }
+
     setState(() => _isExporting = true);
 
     try {
       final snippetPath = await _storageService.generateSnippetFilePath('${DateTime.now().millisecondsSinceEpoch}');
-      final inputFile = File(_currentSession.filePath);
-      final outputFile = File(snippetPath);
+      final inputFile = AppFile(_currentSession.filePath);
+      final outputFile = AppFile(snippetPath);
 
       final trimmedFile = await _trimmerService.trimAudioSnippet(
         inputFile: inputFile,
