@@ -1,0 +1,123 @@
+# Miscellaneous & OS
+*.class
+*.log
+*.pyc
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+.atom/
+.build/
+.buildlog/
+.history
+.svn/
+.swiftpm/
+migrate_working_dir/
+
+# IntelliJ & Android Studio
+*.iml
+*.ipr
+*.iws
+.idea/
+
+# Visual Studio Code
+.vscode/
+
+# AI Assistants & Context Servers
+.gemini/
+.cursor/
+.codex/
+.grok/
+.zed/
+*.mcp.json
+opencode.json
+config/
+
+# Audio Data & Session Dumps
+*.wav
+*.m4a
+*.mp3
+*.aac
+*.ogg
+*.flac
+*.pcm
+
+# Flutter / Dart / Pub
+**/doc/api/
+**/ios/Flutter/.last_build_id
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+/build/
+/coverage/
+
+# Obfuscation & Symbols
+app.*.symbols
+app.*.map.json
+
+# Secrets, Keystores & Credentials
+*.keystore
+*.jks
+*.key
+*.p12
+*.cer
+*.mobileprovision
+key.properties
+*.env
+*.env.*
+google-services.json
+GoogleService-Info.plist
+
+# Android
+**/android/**/gradle-wrapper.jar
+**/android/.gradle
+**/android/build/
+/android/build/
+**/android/captures/
+**/android/local.properties
+**/android/**/GeneratedPluginRegistrant.java
+/android/app/debug
+/android/app/profile
+/android/app/release
+
+# iOS & macOS Ephemeral / Generated
+**/ios/**/*.mode1v3
+**/ios/**/*.mode2v3
+**/ios/**/*.moved-aside
+**/ios/**/*.pbxuser
+**/ios/**/*.perspectivev3
+**/ios/**/*sync/
+**/ios/**/.sconsign.dblite
+**/ios/**/.tags*
+**/ios/**/.vagrant/
+**/ios/**/DerivedData/
+**/ios/**/Icon?
+**/ios/**/Pods/
+**/ios/**/.symlinks/
+**/ios/**/profile
+**/ios/**/xcuserdata
+**/ios/.generated/
+**/ios/Flutter/App.framework
+**/ios/Flutter/Flutter.framework
+**/ios/Flutter/Flutter.podspec
+**/ios/Flutter/Generated.xcconfig
+**/ios/Flutter/app.flx
+**/ios/Flutter/flutter_assets/
+**/ios/Flutter/flutter_export_environment.sh
+**/ios/Flutter/ephemeral/
+**/ios/ServiceDefinitions.json
+**/ios/Runner/GeneratedPluginRegistrant.*
+
+**/macos/Flutter/ephemeral
+**/macos/Flutter/GeneratedPluginRegistrant.swift
+**/macos/Flutter/Generated.xcconfig
+**/macos/Flutter/flutter_export_environment.sh
+
+# Windows & Linux Ephemeral
+**/windows/flutter/ephemeral/
+**/windows/flutter/GeneratedPluginRegistrant.*
+**/linux/flutter/ephemeral/
+**/linux/flutter/GeneratedPluginRegistrant.*
