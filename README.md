@@ -3,6 +3,9 @@
 > **Smart, privacy-first sleep talk & noise recorder for Flutter.**  
 > Automatically records overnight sleep audio, analyzes noise spikes (sleep talking, snoring, movement), and lets you quickly scrub through detected audio events without cloud dependencies.
 
+> [!NOTE]
+> 🤖 **Vibecoded Project:** Dieses gesamte Projekt wurde mit **Vibecoding** entwickelt und ist meine allererste Erfahrung im Erstellen einer vollständigen App mit AI-gestütztem Vibecoding!
+
 ---
 
 ## ✨ Features
