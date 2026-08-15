@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -284,6 +285,11 @@ class _HomeScreenState extends State<HomeScreen> {
                   padding: const EdgeInsets.all(16.0),
                   child: Column(
                     children: [
+                      if (kIsWeb) ...[
+                        _buildWebNoticeCard(),
+                        const SizedBox(height: 16),
+                      ],
+
                       // Active Recording / Control Card
                       _buildRecordingCard(isRecording),
                       const SizedBox(height: 16),
@@ -291,8 +297,8 @@ class _HomeScreenState extends State<HomeScreen> {
                       // Live Mic Test Widget
                       _buildMicTestCard(),
 
-                      // Battery Optimization Info Card (hidden if already granted)
-                      if (!_isBatteryOptIgnored) ...[
+                      // Battery Optimization Info Card (mobile only)
+                      if (!kIsWeb && !_isBatteryOptIgnored) ...[
                         const SizedBox(height: 12),
                         _buildBatteryOptCard(),
                       ],
@@ -640,5 +646,47 @@ class _HomeScreenState extends State<HomeScreen> {
     final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
     final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
     return '${h}h ${m}m ${s}s';
+  }
+
+  Widget _buildWebNoticeCard() {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppTheme.surfaceLight.withValues(alpha: 0.7),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppTheme.primaryGlow.withValues(alpha: 0.3)),
+      ),
+      child: const Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.info_outline_rounded, color: AppTheme.primaryGlow, size: 22),
+          SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '🌐 Web-Vorschau / Demo',
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 14,
+                    color: AppTheme.textPrimary,
+                  ),
+                ),
+                SizedBox(height: 4),
+                Text(
+                  'So sieht die App ungefähr auf dem Handy aus! Du kannst die Funktionen, die Schlafanalyse und den Mikrofontest hier kurz ausprobieren – im Web-Browser ist das Ganze natürlich eingeschränkt und nicht so zuverlässig wie die echte App. Für die echte Nachtaufnahme mit Akku-Schutz lade dir einfach die fertige Android-APK auf GitHub herunter.',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: AppTheme.textSecondary,
+                    height: 1.35,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }
