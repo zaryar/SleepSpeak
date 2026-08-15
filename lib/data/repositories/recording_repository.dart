@@ -1,7 +1,7 @@
-import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:intl/intl.dart';
 import '../../domain/models/recording_session.dart';
+import '../services/platform_file/platform_file.dart';
 import '../services/storage_service.dart';
 
 class RecordingRepository extends ChangeNotifier {
@@ -63,8 +63,16 @@ class RecordingRepository extends ChangeNotifier {
     required List<double> amplitudeHistory,
   }) async {
     if (_activeOngoingSession != null) {
-      final audioFile = File(_activeOngoingSession!.filePath);
-      final sizeBytes = await audioFile.exists() ? await audioFile.length() : 0;
+      int sizeBytes = 0;
+      if (!kIsWeb) {
+        try {
+          final audioFile = AppFile(_activeOngoingSession!.filePath);
+          sizeBytes = await audioFile.exists() ? await audioFile.length() : 0;
+        } catch (_) {}
+      } else {
+        // Approximate bytes on Web (16kHz 16bit mono = 32000 bytes/sec)
+        sizeBytes = duration.inSeconds * 32000;
+      }
 
       _activeOngoingSession = _activeOngoingSession!.copyWith(
         duration: duration,
@@ -89,8 +97,15 @@ class RecordingRepository extends ChangeNotifier {
     final dateStr = DateFormat('dd.MM.yyyy - HH:mm').format(startTime);
     final title = 'Schlaf vom $dateStr Uhr';
 
-    final audioFile = File(audioFilePath);
-    final sizeBytes = await audioFile.exists() ? await audioFile.length() : 0;
+    int sizeBytes = 0;
+    if (!kIsWeb) {
+      try {
+        final audioFile = AppFile(audioFilePath);
+        sizeBytes = await audioFile.exists() ? await audioFile.length() : 0;
+      } catch (_) {}
+    } else {
+      sizeBytes = duration.inSeconds * 32000;
+    }
 
     var session = RecordingSession(
       id: sessionId,

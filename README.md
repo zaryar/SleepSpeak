@@ -6,6 +6,9 @@
 > [!NOTE]
 > 🤖 **Vibecoded Project:** Dieses gesamte Projekt wurde mit **Vibecoding** entwickelt und ist meine allererste Erfahrung im Erstellen einer vollständigen App mit AI-gestütztem Vibecoding!
 
+### 🌐 Live Web Demo: [https://zaryar.github.io/SleepSpeak/](https://zaryar.github.io/SleepSpeak/)
+Teste die Schlafanalyse, den interaktiven Wellenform-Scrubber und den Schwellenwert-Filter direkt online im Browser!
+
 ---
 
 ## ✨ Features

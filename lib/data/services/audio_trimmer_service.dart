@@ -1,6 +1,6 @@
-import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/services.dart';
+import 'platform_file/platform_file.dart';
 
 class AudioTrimmerService {
   static const MethodChannel _encoderChannel =
@@ -8,9 +8,9 @@ class AudioTrimmerService {
 
   /// Trims and hardware-encodes a segment to genuine M4A (AAC) audio format
   /// with exact duration, 100% compatible with WhatsApp, iOS, Android, and web players.
-  Future<File> trimAudioSnippet({
-    required File inputFile,
-    required File outputFile,
+  Future<AppFile> trimAudioSnippet({
+    required AppFile inputFile,
+    required AppFile outputFile,
     required Duration startOffset,
     required Duration duration,
   }) async {
@@ -40,9 +40,9 @@ class AudioTrimmerService {
   }
 
   /// Trims a WAV file between startOffset and duration.
-  Future<File> trimWavFile({
-    required File inputFile,
-    required File outputFile,
+  Future<AppFile> trimWavFile({
+    required AppFile inputFile,
+    required AppFile outputFile,
     required Duration startOffset,
     required Duration duration,
   }) async {
@@ -66,8 +66,8 @@ class AudioTrimmerService {
     final startByteOffset = 44 + ((startOffset.inMilliseconds * sampleRate * blockAlign) ~/ 1000);
     final targetByteLength = ((duration.inMilliseconds * sampleRate * blockAlign) ~/ 1000);
 
-    int startByte = startByteOffset.clamp(44, bytes.length);
-    int endByte = (startByte + targetByteLength).clamp(startByte, bytes.length);
+    int startByte = startByteOffset.clamp(44, bytes.length).toInt();
+    int endByte = (startByte + targetByteLength).clamp(startByte, bytes.length).toInt();
     int pcmSubLength = endByte - startByte;
 
     final newHeader = Uint8List.fromList(header);
