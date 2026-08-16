@@ -72,6 +72,8 @@ class NotificationService {
     try {
       await _nativeChannel.invokeMethod('stopService');
     } catch (_) {}
-    await _notificationsPlugin.cancel(recordingNotificationId);
+    try {
+      await _notificationsPlugin.cancel(recordingNotificationId);
+    } catch (_) {}
   }
 }
