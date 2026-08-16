@@ -115,41 +115,60 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  bool _isSavingSession = false;
+
   Future<void> _toggleSleepRecording() async {
     if (_recorderService.state == RecordingState.recordingSleep) {
-      // Stop recording
-      _uiRecordingTimer?.cancel();
-      _uiRecordingTimer = null;
-      final path = await _recorderService.stopSleepRecording();
-      if (path != null) {
-        final startTime = _recorderService.startTime ?? DateTime.now();
-        final duration = _recorderService.elapsedDuration;
-        final history = _recorderService.amplitudeHistory;
+      if (_isSavingSession) return;
+      setState(() {
+        _isSavingSession = true;
+      });
 
-        final session = await widget.repository.saveNewSession(
-          audioFilePath: path,
-          startTime: startTime,
-          duration: duration,
-          amplitudeHistory: history,
-        );
+      try {
+        _uiRecordingTimer?.cancel();
+        _uiRecordingTimer = null;
+        final path = await _recorderService.stopSleepRecording();
+        if (path != null) {
+          final startTime = _recorderService.startTime ?? DateTime.now();
+          final duration = _recorderService.elapsedDuration;
+          final history = _recorderService.amplitudeHistory;
 
+          final session = await widget.repository.saveNewSession(
+            audioFilePath: path,
+            startTime: startTime,
+            duration: duration,
+            amplitudeHistory: history,
+          );
+
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('🌙 Schlafaufnahme erfolgreich gespeichert!')),
+            );
+            // Navigate to recording detail
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (ctx) => RecordingDetailScreen(
+                  session: session,
+                  repository: widget.repository,
+                ),
+              ),
+            );
+          }
+        }
+      } catch (e) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('🌙 Schlafaufnahme erfolgreich gespeichert!')),
-          );
-          // Navigate to recording detail
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (ctx) => RecordingDetailScreen(
-                session: session,
-                repository: widget.repository,
-              ),
-            ),
+            SnackBar(content: Text('Fehler beim Stoppen: $e')),
           );
         }
+      } finally {
+        if (mounted) {
+          setState(() {
+            _isSavingSession = false;
+          });
+        }
       }
-      setState(() {});
     } else {
       final micStatus = await Permission.microphone.request();
       await Permission.notification.request();
@@ -424,7 +443,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
           // Start / Stop Button
           ElevatedButton.icon(
-            onPressed: _toggleSleepRecording,
+            onPressed: _isSavingSession ? null : _toggleSleepRecording,
             style: ElevatedButton.styleFrom(
               backgroundColor: isRecording ? Colors.redAccent : AppTheme.primary,
               foregroundColor: Colors.white,
@@ -433,11 +452,19 @@ class _HomeScreenState extends State<HomeScreen> {
                 borderRadius: BorderRadius.circular(30),
               ),
             ),
-            icon: Icon(isRecording ? Icons.stop_rounded : Icons.play_arrow_rounded, size: 28),
+            icon: _isSavingSession
+                ? const SizedBox(
+                    width: 24,
+                    height: 24,
+                    child: CircularProgressIndicator(strokeWidth: 2.5, color: Colors.white),
+                  )
+                : Icon(isRecording ? Icons.stop_rounded : Icons.play_arrow_rounded, size: 28),
             label: FittedBox(
               fit: BoxFit.scaleDown,
               child: Text(
-                isRecording ? 'AUFNAHME STOPPEN' : 'SCHLAF AUFNEHMEN',
+                _isSavingSession
+                    ? 'WIRD GESPEICHERT...'
+                    : (isRecording ? 'AUFNAHME STOPPEN' : 'SCHLAF AUFNEHMEN'),
                 style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, letterSpacing: 1),
               ),
             ),
