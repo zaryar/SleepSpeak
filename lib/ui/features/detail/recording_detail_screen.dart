@@ -69,7 +69,13 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
       if (path.startsWith('assets/') || path.startsWith('asset://')) {
         final clean = path.replaceFirst('asset://', '');
         await _audioPlayer.setAsset(clean);
-      } else if (!kIsWeb) {
+      } else if (kIsWeb) {
+        if (path.startsWith('blob:') || path.startsWith('http://') || path.startsWith('https://')) {
+          await _audioPlayer.setUrl(path);
+        } else {
+          await _audioPlayer.setAsset('assets/audio/demo_sleep.wav');
+        }
+      } else {
         final file = AppFile(path);
         if (await file.exists()) {
           await _audioPlayer.setFilePath(path);
