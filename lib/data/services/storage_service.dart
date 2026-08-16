@@ -12,6 +12,8 @@ class StorageService {
   final LoggerService _logger = LoggerService();
   final WavAnalyzerService _wavAnalyzer = WavAnalyzerService();
 
+  WavAnalyzerService get wavAnalyzer => _wavAnalyzer;
+
   static const String _webStorageKey = 'sleep_sessions_web_storage_v2';
 
   Future<AppDirectory?> get _recordingsDir async {
@@ -97,21 +99,18 @@ class StorageService {
             final seconds = (bytes - 44) > 0 ? ((bytes - 44) / 32000).round() : 0;
             final actualDuration = Duration(seconds: seconds);
 
-            // If unfinalized or if amplitudeHistory is sparse, extract from WAV file
-            final expectedSamples = (seconds * 5); // 5 samples per sec (200ms)
-            if (!session.isFinalized || session.amplitudeHistory.length < expectedSamples * 0.5) {
-              _logger.log('Analyzing WAV file on disk for session ${session.id} ($bytes bytes)...');
-              final extractedHistory = await _wavAnalyzer.extractAmplitudeHistory(audioFile);
+            // Only process unfinalized sessions that were interrupted by a crash/reboot
+            if (!session.isFinalized) {
+              _logger.log('Finalizing crashed/interrupted session ${session.id} ($bytes bytes)...');
+              final analysis = await _wavAnalyzer.analyzeWavFile(audioFile, thresholdDb: -38.0);
 
               session = session.copyWith(
                 duration: actualDuration,
                 isFinalized: true,
                 fileSizeBytes: bytes,
-                amplitudeHistory: extractedHistory.isNotEmpty ? extractedHistory : session.amplitudeHistory,
+                amplitudeHistory: analysis.waveformHistory.isNotEmpty ? analysis.waveformHistory : session.amplitudeHistory,
+                detectedEvents: analysis.detectedEvents.isNotEmpty ? analysis.detectedEvents : session.detectedEvents,
               );
-
-              final events = session.recalculateEvents(-38.0);
-              session = session.copyWith(detectedEvents: events);
 
               await saveSessionMetadata(session);
               _logger.log('Finalized session ${session.id} with ${session.detectedEvents.length} detected noise events.');

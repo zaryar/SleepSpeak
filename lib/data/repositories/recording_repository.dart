@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:intl/intl.dart';
+import '../../domain/models/detected_event.dart';
 import '../../domain/models/recording_session.dart';
 import '../services/platform_file/platform_file.dart';
 import '../services/storage_service.dart';
@@ -107,21 +108,41 @@ class RecordingRepository extends ChangeNotifier {
       sizeBytes = duration.inSeconds * 32000;
     }
 
+    List<DetectedEvent> events = [];
+    List<double> finalWaveform = amplitudeHistory;
+
+    if (!kIsWeb) {
+      try {
+        final audioFile = AppFile(audioFilePath);
+        if (await audioFile.exists()) {
+          final analysis = await _storageService.wavAnalyzer.analyzeWavFile(audioFile, thresholdDb: _defaultNoiseThresholdDb);
+          if (analysis.detectedEvents.isNotEmpty) {
+            events = analysis.detectedEvents;
+          }
+          if (analysis.waveformHistory.isNotEmpty) {
+            finalWaveform = analysis.waveformHistory;
+          }
+        }
+      } catch (_) {}
+    }
+
     var session = RecordingSession(
       id: sessionId,
       title: title,
       filePath: audioFilePath,
       startTime: startTime,
       duration: duration,
-      amplitudeHistory: amplitudeHistory,
+      amplitudeHistory: finalWaveform,
       isFavorite: false,
       isFinalized: true,
       fileSizeBytes: sizeBytes,
-      detectedEvents: [],
+      detectedEvents: events,
     );
 
-    final events = session.recalculateEvents(_defaultNoiseThresholdDb);
-    session = session.copyWith(detectedEvents: events);
+    if (events.isEmpty && amplitudeHistory.isNotEmpty) {
+      final recalculated = session.recalculateEvents(_defaultNoiseThresholdDb);
+      session = session.copyWith(detectedEvents: recalculated);
+    }
 
     await _storageService.saveSessionMetadata(session);
     _activeOngoingSession = null;
