@@ -144,8 +144,8 @@ class AudioRecorderService {
 
     try {
       await _recorder.start(
-        const RecordConfig(
-          encoder: AudioEncoder.wav,
+        RecordConfig(
+          encoder: kIsWeb ? AudioEncoder.opus : AudioEncoder.wav,
           sampleRate: 16000,
           numChannels: 1,
         ),
