@@ -27,6 +27,27 @@ class RecordingRepository extends ChangeNotifier {
       // Run automatic 7-day retention cleanup on launch & crash recovery
       await _storageService.runRetentionCleanup(retentionDays: 7);
       _sessions = await _storageService.loadAllSessions();
+
+      // Auto-repair any past sessions where events had downsampled durations (e.g. 24.6s bug)
+      if (!kIsWeb) {
+        for (int i = 0; i < _sessions.length; i++) {
+          final s = _sessions[i];
+          final hasSwollenEvents = s.detectedEvents.isNotEmpty &&
+              s.detectedEvents.every((e) => e.duration.inMilliseconds >= 24000) &&
+              s.duration.inMinutes > 30;
+          if (hasSwollenEvents) {
+            try {
+              final audioFile = AppFile(s.filePath);
+              if (await audioFile.exists()) {
+                final result = await _storageService.wavAnalyzer.analyzeWavFile(audioFile, thresholdDb: _defaultNoiseThresholdDb);
+                final repaired = s.copyWith(detectedEvents: result.detectedEvents);
+                _sessions[i] = repaired;
+                await _storageService.saveSessionMetadata(repaired);
+              }
+            } catch (_) {}
+          }
+        }
+      }
     } finally {
       _isLoading = false;
       notifyListeners();
@@ -168,7 +189,22 @@ class RecordingRepository extends ChangeNotifier {
     final idx = _sessions.indexWhere((s) => s.id == sessionId);
     if (idx != -1) {
       final session = _sessions[idx];
-      final newEvents = session.recalculateEvents(thresholdDb);
+      List<DetectedEvent> newEvents = [];
+
+      if (!kIsWeb) {
+        try {
+          final audioFile = AppFile(session.filePath);
+          if (await audioFile.exists()) {
+            final result = await _storageService.wavAnalyzer.analyzeWavFile(audioFile, thresholdDb: thresholdDb);
+            newEvents = result.detectedEvents;
+          }
+        } catch (_) {}
+      }
+
+      if (newEvents.isEmpty && session.amplitudeHistory.isNotEmpty) {
+        newEvents = session.recalculateEvents(thresholdDb);
+      }
+
       final updated = session.copyWith(detectedEvents: newEvents);
       _sessions[idx] = updated;
       await _storageService.saveSessionMetadata(updated);
