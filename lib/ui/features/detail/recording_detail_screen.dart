@@ -53,6 +53,7 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
   double _snippetEndRatio = 0.25;
 
   bool _isExporting = false;
+  Timer? _thresholdDebounceTimer;
 
   @override
   void initState() {
@@ -61,6 +62,14 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
     _audioPlayer = AudioPlayer();
 
     _initAudioPlayer();
+
+    // If opening a session with previously swollen downsampled events, auto-recalculate from WAV
+    if (!kIsWeb &&
+        _currentSession.detectedEvents.isNotEmpty &&
+        _currentSession.detectedEvents.every((e) => e.duration.inMilliseconds >= 24000) &&
+        _currentSession.duration.inMinutes > 30) {
+      _applyThresholdUpdate(_thresholdDb);
+    }
   }
 
   Future<void> _initAudioPlayer() async {
@@ -103,6 +112,7 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
 
   @override
   void dispose() {
+    _thresholdDebounceTimer?.cancel();
     _audioPlayer.dispose();
     _waveformScrollController.dispose();
     _positionNotifier.dispose();
@@ -130,7 +140,7 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
       _thresholdDb = val;
       _isNoiseFilterEnabled = true;
     });
-    _applyThresholdUpdate(val);
+    _debounceThresholdUpdate(val);
   }
 
   void _toggleNoiseFilter(bool enabled) {
@@ -138,16 +148,25 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
       _isNoiseFilterEnabled = enabled;
       _thresholdDb = enabled ? -38.0 : -60.0;
     });
-    _applyThresholdUpdate(_thresholdDb);
+    _debounceThresholdUpdate(_thresholdDb);
   }
 
-  void _applyThresholdUpdate(double val) {
-    widget.repository.updateSessionEvents(_currentSession.id, val);
-    final idx = widget.repository.sessions.indexWhere((s) => s.id == _currentSession.id);
-    if (idx != -1) {
-      setState(() {
-        _currentSession = widget.repository.sessions[idx];
-      });
+  void _debounceThresholdUpdate(double val) {
+    _thresholdDebounceTimer?.cancel();
+    _thresholdDebounceTimer = Timer(const Duration(milliseconds: 150), () {
+      _applyThresholdUpdate(val);
+    });
+  }
+
+  Future<void> _applyThresholdUpdate(double val) async {
+    await widget.repository.updateSessionEvents(_currentSession.id, val);
+    if (mounted) {
+      final idx = widget.repository.sessions.indexWhere((s) => s.id == _currentSession.id);
+      if (idx != -1) {
+        setState(() {
+          _currentSession = widget.repository.sessions[idx];
+        });
+      }
     }
   }
 
