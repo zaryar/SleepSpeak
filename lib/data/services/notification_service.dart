@@ -82,6 +82,39 @@ class NotificationService {
     );
   }
 
+  Future<void> showDelayedTimerNotification({
+    required String timeRemainingText,
+    required String targetStartTime,
+  }) async {
+    try {
+      await _nativeChannel.invokeMethod('startService', {
+        'title': '⏳ Einschlaf-Timer: Startet um $targetStartTime Uhr',
+      });
+    } catch (_) {}
+
+    const androidDetails = AndroidNotificationDetails(
+      channelId,
+      channelName,
+      channelDescription: 'Einschlaf-Timer vor dem Start der Schlafaufnahme',
+      importance: Importance.low,
+      priority: Priority.low,
+      ongoing: true,
+      autoCancel: false,
+      playSound: false,
+      enableVibration: false,
+      showWhen: true,
+    );
+
+    const notificationDetails = NotificationDetails(android: androidDetails);
+
+    await _notificationsPlugin.show(
+      recordingNotificationId,
+      '⏳ Einschlaf-Timer aktiv',
+      'Startet in $timeRemainingText (um $targetStartTime Uhr)',
+      notificationDetails,
+    );
+  }
+
   Future<void> cancelRecordingNotification() async {
     try {
       await _nativeChannel.invokeMethod('stopService');
