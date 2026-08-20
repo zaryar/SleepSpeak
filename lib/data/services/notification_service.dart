@@ -16,6 +16,10 @@ class NotificationService {
   static const String channelId = 'sleep_recorder_channel';
   static const String channelName = 'Schlaf-Recorder Dienst';
 
+  static const int backupNotificationId = 999;
+  static const String backupChannelId = 'backup_channel';
+  static const String backupChannelName = 'Backup & Export';
+
   Future<void> init() async {
     const androidSettings = AndroidInitializationSettings('@mipmap/ic_launcher');
     const initSettings = InitializationSettings(android: androidSettings);
@@ -31,10 +35,20 @@ class NotificationService {
       enableVibration: false,
     );
 
-    await _notificationsPlugin
-        .resolvePlatformSpecificImplementation<
-            AndroidFlutterLocalNotificationsPlugin>()
-        ?.createNotificationChannel(androidPlatformChannelSpecifics);
+    final backupChannelSpecifics = const AndroidNotificationChannel(
+      backupChannelId,
+      backupChannelName,
+      description: 'Fortschrittsanzeige beim Erstellen von Backups',
+      importance: Importance.low,
+      playSound: false,
+      enableVibration: false,
+    );
+
+    final androidPlugin = _notificationsPlugin
+        .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
+
+    await androidPlugin?.createNotificationChannel(androidPlatformChannelSpecifics);
+    await androidPlugin?.createNotificationChannel(backupChannelSpecifics);
   }
 
   Future<void> showRecordingNotification({required String durationText}) async {
@@ -74,6 +88,43 @@ class NotificationService {
     } catch (_) {}
     try {
       await _notificationsPlugin.cancel(recordingNotificationId);
+    } catch (_) {}
+  }
+
+  Future<void> showBackupProgressNotification({
+    required int progress,
+    required int maxProgress,
+    required String statusText,
+  }) async {
+    final androidDetails = AndroidNotificationDetails(
+      backupChannelId,
+      backupChannelName,
+      channelDescription: 'Fortschrittsanzeige beim Erstellen von Backups',
+      importance: Importance.low,
+      priority: Priority.low,
+      showProgress: true,
+      maxProgress: maxProgress,
+      progress: progress,
+      ongoing: true,
+      onlyAlertOnce: true,
+      autoCancel: false,
+      playSound: false,
+      enableVibration: false,
+    );
+
+    final notificationDetails = NotificationDetails(android: androidDetails);
+
+    await _notificationsPlugin.show(
+      backupNotificationId,
+      '📦 Backup wird erstellt ($progress %)',
+      statusText,
+      notificationDetails,
+    );
+  }
+
+  Future<void> cancelBackupNotification() async {
+    try {
+      await _notificationsPlugin.cancel(backupNotificationId);
     } catch (_) {}
   }
 }
