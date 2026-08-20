@@ -214,7 +214,7 @@ Antworte AUSSCHLIESSLICH als valides JSON-Objekt im folgenden Format:
         }
       }
     } catch (e) {
-      _logger.log('GeminiAudioService Exception: $e');
+      _logger.log('GeminiAudioService Exception: ${e.toString().replaceAll(apiKey, '***')}');
     }
 
     return const GeminiAudioClassificationResult(

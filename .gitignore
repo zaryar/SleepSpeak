@@ -23,6 +23,15 @@ migrate_working_dir/
 # Visual Studio Code
 .vscode/
 
+# Secrets, Environment & API Keys
+.env
+.env.*
+*.env
+api_keys.json
+secrets.json
+*.key
+*.secret
+
 # AI Assistants & Context Servers
 .gemini/
 .cursor/
