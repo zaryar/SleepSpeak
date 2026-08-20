@@ -26,10 +26,10 @@ class LoggerService {
     try {
       final now = DateFormat('yyyy-MM-dd HH:mm:ss.SSS').format(DateTime.now());
       final line = '[$now] $message\n';
+      debugPrint(line);
       if (kIsWeb) {
         _inMemoryLogs.add(line);
         if (_inMemoryLogs.length > 500) _inMemoryLogs.removeAt(0);
-        debugPrint(line);
       } else if (_logFile != null) {
         await _logFile!.writeAsString(line, flush: true, append: true);
       }

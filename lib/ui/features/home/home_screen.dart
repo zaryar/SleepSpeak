@@ -3,7 +3,10 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:share_plus/share_plus.dart';
 import '../../../data/repositories/recording_repository.dart';
+import '../../../data/services/native_file_picker_service.dart';
+import '../../../data/services/notification_service.dart';
 import '../../../data/services/audio_recorder_service.dart';
 import '../../../data/services/logger_service.dart';
 import '../../../data/services/storage_service.dart';
@@ -22,11 +25,17 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   final AudioRecorderService _recorderService = AudioRecorderService();
+  final NotificationService _notificationService = NotificationService();
   bool _isMicTesting = false;
   double _currentMicTestDb = -60.0;
   StreamSubscription<double>? _amplitudeSub;
   Timer? _uiRecordingTimer;
   bool _isBatteryOptIgnored = false;
+
+  int _startDelayMinutes = 10;
+  bool _isDelayedStartActive = false;
+  int _remainingDelaySeconds = 0;
+  Timer? _delayCountdownTimer;
 
   @override
   void initState() {
@@ -74,9 +83,172 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void dispose() {
     _uiRecordingTimer?.cancel();
+    _delayCountdownTimer?.cancel();
     _amplitudeSub?.cancel();
     _recorderService.dispose();
     super.dispose();
+  }
+
+  void _startDelayedRecording() {
+    setState(() {
+      _isDelayedStartActive = true;
+      _remainingDelaySeconds = _startDelayMinutes * 60;
+    });
+
+    _delayCountdownTimer?.cancel();
+    _delayCountdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      if (_remainingDelaySeconds <= 1) {
+        timer.cancel();
+        setState(() {
+          _isDelayedStartActive = false;
+          _remainingDelaySeconds = 0;
+        });
+        _toggleSleepRecording();
+      } else {
+        setState(() {
+          _remainingDelaySeconds--;
+        });
+      }
+    });
+  }
+
+  void _cancelDelayedRecording() {
+    _delayCountdownTimer?.cancel();
+    setState(() {
+      _isDelayedStartActive = false;
+      _remainingDelaySeconds = 0;
+    });
+  }
+
+  void _startImmediatelyFromDelayed() {
+    _delayCountdownTimer?.cancel();
+    setState(() {
+      _isDelayedStartActive = false;
+      _remainingDelaySeconds = 0;
+    });
+    _toggleSleepRecording();
+  }
+
+  void _showDelayPickerModal() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppTheme.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            return SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF38BDF8).withValues(alpha: 0.15),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: const Icon(Icons.timer_outlined, color: Color(0xFF38BDF8)),
+                        ),
+                        const SizedBox(width: 14),
+                        const Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Startverzögerung einstellen',
+                                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                              ),
+                              Text(
+                                'Gib dir Zeit zum Einschlafen, bevor die Aufnahme startet',
+                                style: TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 20),
+
+                    Center(
+                      child: Text(
+                        '$_startDelayMinutes Minuten',
+                        style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Color(0xFF38BDF8)),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+
+                    Slider(
+                      value: _startDelayMinutes.toDouble(),
+                      min: 1.0,
+                      max: 30.0,
+                      divisions: 29,
+                      activeColor: const Color(0xFF38BDF8),
+                      label: '$_startDelayMinutes Min',
+                      onChanged: (v) {
+                        setModalState(() {
+                          _startDelayMinutes = v.round();
+                        });
+                        setState(() {
+                          _startDelayMinutes = v.round();
+                        });
+                      },
+                    ),
+                    const SizedBox(height: 8),
+
+                    // Quick Selection Chips
+                    Wrap(
+                      spacing: 8,
+                      children: [1, 5, 10, 15, 20, 30].map((mins) {
+                        final isSel = _startDelayMinutes == mins;
+                        return ChoiceChip(
+                          label: Text('$mins Min'),
+                          selected: isSel,
+                          selectedColor: const Color(0xFF38BDF8).withValues(alpha: 0.3),
+                          onSelected: (_) {
+                            setModalState(() => _startDelayMinutes = mins);
+                            setState(() => _startDelayMinutes = mins);
+                          },
+                        );
+                      }).toList(),
+                    ),
+                    const SizedBox(height: 20),
+
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton.icon(
+                        onPressed: () {
+                          Navigator.pop(ctx);
+                          _startDelayedRecording();
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF38BDF8),
+                          foregroundColor: Colors.black,
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        ),
+                        icon: const Icon(Icons.play_arrow),
+                        label: Text('In $_startDelayMinutes Minuten starten', style: const TextStyle(fontWeight: FontWeight.bold)),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
   }
 
   Future<void> _toggleMicTest() async {
@@ -272,6 +444,235 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  Future<void> _showBackupRestoreDialog() async {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppTheme.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (ctx) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: AppTheme.primary.withValues(alpha: 0.15),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: const Icon(Icons.cloud_sync, color: AppTheme.primary),
+                    ),
+                    const SizedBox(width: 14),
+                    const Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Backup, Export & Import',
+                            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                          ),
+                          SizedBox(height: 2),
+                          Text(
+                            'Sichere deine Schlafaufnahmen oder importiere Audio',
+                            style: TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 24),
+
+                // Option 1: Export / Share All Recordings as ZIP Archive
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF0284C7).withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Icon(Icons.archive_outlined, color: Color(0xFF38BDF8)),
+                  ),
+                  title: const Text('Komplettes Backup erstellen (.zip)', style: TextStyle(fontWeight: FontWeight.w600)),
+                  subtitle: const Text('Packt alle Original-WAV-Audios & Analysen in eine handliche ZIP-Datei zum Sichern'),
+                  trailing: const Icon(Icons.arrow_forward_ios, size: 16, color: AppTheme.textSecondary),
+                  onTap: () async {
+                    Navigator.pop(ctx);
+
+                    double currentProgress = 0.05;
+                    String currentStatus = 'Vorbereiten der Dateien...';
+                    StateSetter? dialogSetState;
+
+                    // Show sleek real-time progress dialog
+                    showDialog(
+                      context: context,
+                      barrierDismissible: false,
+                      builder: (dialogCtx) {
+                        return StatefulBuilder(
+                          builder: (context, setModalState) {
+                            dialogSetState = setModalState;
+                            final percent = (currentProgress * 100).toInt().clamp(0, 100);
+                            return AlertDialog(
+                              backgroundColor: AppTheme.surface,
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                              title: const Row(
+                                children: [
+                                  Icon(Icons.archive, color: AppTheme.primary),
+                                  SizedBox(width: 10),
+                                  Text('Backup wird erstellt', style: TextStyle(fontSize: 18)),
+                                ],
+                              ),
+                              content: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    currentStatus,
+                                    style: const TextStyle(fontSize: 13, color: AppTheme.textSecondary),
+                                  ),
+                                  const SizedBox(height: 16),
+                                  ClipRRect(
+                                    borderRadius: BorderRadius.circular(8),
+                                    child: LinearProgressIndicator(
+                                      value: currentProgress,
+                                      minHeight: 8,
+                                      backgroundColor: AppTheme.surfaceLight,
+                                      color: AppTheme.primary,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  Align(
+                                    alignment: Alignment.centerRight,
+                                    child: Text(
+                                      '$percent %',
+                                      style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: AppTheme.primary),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            );
+                          },
+                        );
+                      },
+                    );
+
+                    try {
+                      final zipPath = await widget.repository.createBackupZip(
+                        onProgress: (ratio, text) {
+                          currentProgress = ratio;
+                          currentStatus = text;
+                          final pct = (ratio * 100).toInt().clamp(0, 100);
+                          _notificationService.showBackupProgressNotification(
+                            progress: pct,
+                            maxProgress: 100,
+                            statusText: text,
+                          );
+                          dialogSetState?.call(() {});
+                        },
+                      );
+
+                      if (mounted) {
+                        Navigator.of(context, rootNavigator: true).pop(); // Close progress dialog
+                      }
+                      await _notificationService.cancelBackupNotification();
+
+                      if (zipPath == null) {
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('Keine Aufnahmen zum Sichern vorhanden.')),
+                          );
+                        }
+                        return;
+                      }
+
+                      await Share.shareXFiles(
+                        [XFile(zipPath, mimeType: 'application/zip')],
+                        text: 'SleepSpeak Komplettes Schlafaufnahmen-Backup (.zip)',
+                      );
+                    } catch (e) {
+                      if (mounted) {
+                        Navigator.of(context, rootNavigator: true).pop();
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text('Fehler beim Erstellen des Backups: $e')),
+                        );
+                      }
+                      await _notificationService.cancelBackupNotification();
+                    }
+                  },
+                ),
+
+                const Divider(height: 24, color: AppTheme.surfaceLight),
+
+                // Option 2: Import ZIP Backup or Audio File
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF10B981).withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Icon(Icons.unarchive_outlined, color: Color(0xFF34D399)),
+                  ),
+                  title: const Text('Backup wiederherstellen / Audio importieren', style: TextStyle(fontWeight: FontWeight.w600)),
+                  subtitle: const Text('Liest ein .zip Backup oder eine .wav Datei ein und stellt alle Nächte wieder her'),
+                  trailing: const Icon(Icons.arrow_forward_ios, size: 16, color: AppTheme.textSecondary),
+                  onTap: () async {
+                    Navigator.pop(ctx);
+                    try {
+                      final path = await NativeFilePickerService.pickAudioFile();
+                      if (path != null && path.isNotEmpty) {
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('⏳ Daten werden wiederhergestellt & analysiert...')),
+                          );
+                        }
+                        final session = await widget.repository.importRecording(path);
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('✅ Backup / Aufnahme erfolgreich eingelesen!'),
+                              backgroundColor: Colors.green,
+                            ),
+                          );
+                          if (session != null) {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (c) => RecordingDetailScreen(
+                                  session: session,
+                                  repository: widget.repository,
+                                ),
+                              ),
+                            );
+                          }
+                        }
+                      }
+                    } catch (e) {
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text('Fehler beim Wiederherstellen: $e')),
+                        );
+                      }
+                    }
+                  },
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final isRecording = _recorderService.state == RecordingState.recordingSleep;
@@ -287,6 +688,11 @@ class _HomeScreenState extends State<HomeScreen> {
           ],
         ),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.cloud_sync_outlined, color: AppTheme.primary),
+            tooltip: 'Backup & Export / Import',
+            onPressed: _showBackupRestoreDialog,
+          ),
           IconButton(
             icon: const Icon(Icons.bug_report_outlined, color: AppTheme.textSecondary),
             tooltip: 'System-Log / Diagnose',
@@ -389,6 +795,91 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildRecordingCard(bool isRecording) {
+    if (_isDelayedStartActive) {
+      final totalSec = _startDelayMinutes * 60;
+      final progress = totalSec > 0 ? (1.0 - (_remainingDelaySeconds / totalSec)).clamp(0.0, 1.0) : 0.0;
+      final mins = _remainingDelaySeconds ~/ 60;
+      final secs = (_remainingDelaySeconds % 60).toString().padLeft(2, '0');
+
+      return Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(24),
+        decoration: BoxDecoration(
+          gradient: const LinearGradient(
+            colors: [Color(0xFF0F172A), Color(0xFF0369A1)],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: const Color(0xFF38BDF8), width: 1.5),
+          boxShadow: [
+            BoxShadow(
+              color: const Color(0xFF0284C7).withValues(alpha: 0.3),
+              blurRadius: 16,
+              spreadRadius: 2,
+            )
+          ],
+        ),
+        child: Column(
+          children: [
+            const Icon(Icons.hourglass_top_rounded, size: 48, color: Color(0xFF38BDF8)),
+            const SizedBox(height: 12),
+            const Text(
+              'Einschlaf-Timer aktiv',
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              'Aufnahme startet automatisch in $mins:$secs Min',
+              style: const TextStyle(color: Color(0xFFE0F2FE), fontSize: 15, fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 16),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: LinearProgressIndicator(
+                value: progress,
+                minHeight: 8,
+                backgroundColor: Colors.white24,
+                color: const Color(0xFF38BDF8),
+              ),
+            ),
+            const SizedBox(height: 20),
+            Row(
+              children: [
+                Expanded(
+                  child: ElevatedButton.icon(
+                    onPressed: _startImmediatelyFromDelayed,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF38BDF8),
+                      foregroundColor: Colors.black,
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
+                    icon: const Icon(Icons.play_arrow, size: 20),
+                    label: const Text('Sofort starten', style: TextStyle(fontWeight: FontWeight.bold)),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _cancelDelayedRecording,
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.white70,
+                      side: const BorderSide(color: Colors.white30),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
+                    icon: const Icon(Icons.close, size: 18),
+                    label: const Text('Abbrechen'),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      );
+    }
+
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(24),
@@ -469,6 +960,41 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ),
           ),
+
+          // Delayed Start Button (Shown when idle)
+          if (!isRecording) ...[
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _startDelayedRecording,
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: const Color(0xFF38BDF8),
+                      side: const BorderSide(color: Color(0xFF0284C7)),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                    ),
+                    icon: const Icon(Icons.timer_outlined, size: 18),
+                    label: Text(
+                      'Schlaf in $_startDelayMinutes Minuten aufnehmen',
+                      style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                IconButton(
+                  onPressed: _showDelayPickerModal,
+                  icon: const Icon(Icons.tune, color: Color(0xFF38BDF8)),
+                  tooltip: 'Startverzögerung anpassen (1-30 Min)',
+                  style: IconButton.styleFrom(
+                    backgroundColor: AppTheme.surfaceLight,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                ),
+              ],
+            ),
+          ],
         ],
       ),
     );

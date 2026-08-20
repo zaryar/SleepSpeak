@@ -1,4 +1,8 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:sleep_recorder/data/services/gemini_audio_service.dart';
+import 'package:sleep_recorder/data/services/platform_file/platform_file.dart';
+import 'package:sleep_recorder/domain/models/detected_event.dart';
 import 'package:sleep_recorder/domain/models/recording_session.dart';
 
 void main() {
@@ -70,6 +74,93 @@ void main() {
 
       final events = session.recalculateEvents(-35.0);
       expect(events, isEmpty);
+    });
+
+    test('DetectedEvent serialization preserves category and confidence', () {
+      const event = DetectedEvent(
+        id: 'evt_speech_1',
+        startOffset: Duration(seconds: 12),
+        duration: Duration(seconds: 3),
+        maxDb: -22.5,
+        avgDb: -28.0,
+        category: EventCategory.speech,
+        confidence: 0.94,
+        transcription: 'Test phrase',
+        subType: 'Flüstern',
+        explanation: 'Deutliches Flüstern im Schlafzimmer.',
+        dynamicEmoji: '🗣️',
+        tags: ['⭐ Favorit', '🤣 Lustig'],
+        isFavorite: true,
+      );
+
+      final json = event.toJson();
+      expect(json['category'], equals('speech'));
+      expect(json['confidence'], equals(0.94));
+      expect(json['transcription'], equals('Test phrase'));
+      expect(json['subType'], equals('Flüstern'));
+      expect(json['explanation'], equals('Deutliches Flüstern im Schlafzimmer.'));
+      expect(json['dynamicEmoji'], equals('🗣️'));
+      expect(json['tags'], equals(['⭐ Favorit', '🤣 Lustig']));
+      expect(json['isFavorite'], isTrue);
+
+      final restored = DetectedEvent.fromJson(json);
+      expect(restored.isSpeech, isTrue);
+      expect(restored.category, equals(EventCategory.speech));
+      expect(restored.categoryLabel, equals('Schlafreden'));
+      expect(restored.categoryEmoji, equals('🗣️'));
+      expect(restored.subType, equals('Flüstern'));
+      expect(restored.explanation, equals('Deutliches Flüstern im Schlafzimmer.'));
+      expect(restored.transcription, equals('Test phrase'));
+      expect(restored.tags, equals(['⭐ Favorit', '🤣 Lustig']));
+      expect(restored.isFavorite, isTrue);
+      expect(restored.isProtected, isTrue);
+    });
+
+    test('GeminiAudioService classifies real WAV snippet correctly', () async {
+      SharedPreferences.setMockInitialValues({});
+      final service = GeminiAudioService();
+      final wavFile = AppFile('assets/audio/demo_sleep.wav');
+      expect(await wavFile.exists(), isTrue);
+
+      final result = await service.classifyAudioSegment(
+        wavFile: wavFile,
+        startMs: 2500,
+        durationMs: 3000,
+      );
+
+      // Should identify speech or sound with Gemini AI analysis
+      expect(result.category, isNot(equals(EventCategory.general)));
+    });
+
+    test('RecordingSession accurately estimates noise floor and measures position noise', () {
+      final List<double> history = [
+        -45.0, -44.5, -45.2, -44.8, // Ambient noise around -45dB
+        -45.0, -44.9, -45.1, -44.7,
+        -20.0, -18.0, -22.0,        // Loud snoring at index 8-10 (4s)
+        -45.0, -45.1, -45.0, -44.8,
+      ];
+
+      final session = RecordingSession(
+        id: 'noise_test_1',
+        title: 'Noise Floor Session',
+        filePath: '/tmp/test_noise.wav',
+        startTime: DateTime.now(),
+        duration: const Duration(seconds: 8),
+        amplitudeHistory: history,
+        fileSizeBytes: 100000,
+        detectedEvents: [],
+      );
+
+      final estimatedNoise = session.estimateNoiseFloorDb();
+      expect(estimatedNoise, inInclusiveRange(-46.0, -44.0));
+
+      // At position 0.5s, it is ambient noise
+      final noiseAtQuiet = session.measureNoiseAtTime(const Duration(milliseconds: 500));
+      expect(noiseAtQuiet, inInclusiveRange(-46.0, -44.0));
+
+      // At position 4.5s (loud snoring), measureNoiseAtTime returns the max peak (-18.0 dB)
+      final noiseAtSnore = session.measureNoiseAtTime(const Duration(milliseconds: 4500));
+      expect(noiseAtSnore, equals(-18.0));
     });
   });
 }

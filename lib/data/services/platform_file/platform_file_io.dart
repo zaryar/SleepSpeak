@@ -16,8 +16,21 @@ class AppFile {
   Future<void> writeAsString(String contents, {bool flush = false, bool append = false}) =>
       _file.writeAsString(contents, mode: append ? io.FileMode.append : io.FileMode.write, flush: flush);
   Future<void> delete() => _file.delete();
+  Future<AppFile> copy(String newPath) async {
+    final copied = await _file.copy(newPath);
+    return AppFile.fromIo(copied);
+  }
   Future<Uint8List> readAsBytes() => _file.readAsBytes();
   Future<void> writeAsBytes(List<int> bytes) => _file.writeAsBytes(bytes);
+  Future<Uint8List> readRange(int start, int length) async {
+    final raf = await _file.open(mode: io.FileMode.read);
+    try {
+      await raf.setPosition(start);
+      return await raf.read(length);
+    } finally {
+      await raf.close();
+    }
+  }
 }
 
 class AppDirectory {
