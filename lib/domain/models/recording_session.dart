@@ -145,7 +145,7 @@ class RecordingSession {
       );
     }
 
-    // Merge events that occur within 5 seconds (5000ms) of each other
+    // Merge events that occur close to each other (gap <= 3s, max combined duration <= 12s)
     final List<DetectedEvent> mergedEvents = [];
     if (events.isNotEmpty) {
       DetectedEvent currentMerged = events.first;
@@ -154,13 +154,12 @@ class RecordingSession {
         final nextEvent = events[i];
         final currentEndMs = currentMerged.startOffset.inMilliseconds + currentMerged.duration.inMilliseconds;
         final gapMs = nextEvent.startOffset.inMilliseconds - currentEndMs;
+        final newDurationMs = (nextEvent.startOffset.inMilliseconds + nextEvent.duration.inMilliseconds) -
+            currentMerged.startOffset.inMilliseconds;
 
-        if (gapMs <= 5000) {
+        if (gapMs <= 3000 && newDurationMs <= 12000) {
           // Merge with currentMerged
-          final newDuration = Duration(
-            milliseconds: (nextEvent.startOffset.inMilliseconds + nextEvent.duration.inMilliseconds) -
-                currentMerged.startOffset.inMilliseconds,
-          );
+          final newDuration = Duration(milliseconds: newDurationMs);
           final newMaxDb = nextEvent.maxDb > currentMerged.maxDb ? nextEvent.maxDb : currentMerged.maxDb;
           final newAvgDb = (currentMerged.avgDb + nextEvent.avgDb) / 2;
 
@@ -170,6 +169,9 @@ class RecordingSession {
             duration: newDuration,
             maxDb: newMaxDb,
             avgDb: newAvgDb,
+            category: currentMerged.category,
+            confidence: currentMerged.confidence,
+            transcription: currentMerged.transcription,
           );
         } else {
           mergedEvents.add(currentMerged);
@@ -180,5 +182,41 @@ class RecordingSession {
     }
 
     return mergedEvents;
+  }
+
+  /// Automatically estimates the background noise floor (Grundrauschen) of the room
+  double estimateNoiseFloorDb() {
+    if (amplitudeHistory.isEmpty) return -50.0;
+
+    // Filter out extreme disconnects (-100dB)
+    final validValues = amplitudeHistory.where((db) => db > -95.0 && db <= 0.0).toList();
+    if (validValues.isEmpty) return -50.0;
+
+    validValues.sort();
+    // 25th percentile represents steady ambient room noise
+    final int p25Index = (validValues.length * 0.25).clamp(0, validValues.length - 1).toInt();
+    return validValues[p25Index];
+  }
+
+  /// Measures the exact peak noise floor in a 3-second window around a selected timestamp
+  double measureNoiseAtTime(Duration position, {Duration window = const Duration(seconds: 3)}) {
+    if (amplitudeHistory.isEmpty || duration.inMilliseconds == 0) return -50.0;
+
+    final double msPerSample = duration.inMilliseconds / amplitudeHistory.length;
+    final int centerIndex = (position.inMilliseconds / msPerSample).round().clamp(0, amplitudeHistory.length - 1);
+    final int windowHalfSamples = ((window.inMilliseconds / 2) / msPerSample).round().clamp(1, 20);
+
+    final int startIdx = (centerIndex - windowHalfSamples).clamp(0, amplitudeHistory.length - 1);
+    final int endIdx = (centerIndex + windowHalfSamples).clamp(startIdx, amplitudeHistory.length - 1);
+
+    double maxNoiseInWindow = -100.0;
+    for (int i = startIdx; i <= endIdx; i++) {
+      final db = amplitudeHistory[i];
+      if (db > maxNoiseInWindow) {
+        maxNoiseInWindow = db;
+      }
+    }
+
+    return maxNoiseInWindow > -95.0 ? maxNoiseInWindow : -50.0;
   }
 }

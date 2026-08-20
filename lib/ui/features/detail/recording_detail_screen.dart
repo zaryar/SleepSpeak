@@ -5,6 +5,7 @@ import 'package:just_audio/just_audio.dart';
 import 'package:share_plus/share_plus.dart';
 import '../../../data/repositories/recording_repository.dart';
 import '../../../data/services/audio_trimmer_service.dart';
+import '../../../data/services/gemini_audio_service.dart';
 import '../../../data/services/platform_file/platform_file.dart';
 import '../../../data/services/storage_service.dart';
 import '../../../domain/models/detected_event.dart';
@@ -38,8 +39,17 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
   bool _isNoiseFilterEnabled = true;
   bool _isPlaying = false;
 
+  // Highlights Auto-Skip Playback state
+  bool _isHighlightPlayback = false;
+  int _currentHighlightIndex = 0;
+  List<DetectedEvent> _highlightQueue = [];
+  double _playbackSpeed = 1.0;
+
   // Selected event ID for glowing highlight & direct playback
   String? _selectedEventId;
+
+  // Category filter: null (All), or specific EventCategory
+  EventCategory? _selectedCategoryFilter;
 
   // Event List Filters (Duration & Min Decibel)
   double _minDurationFilterSec = 0.0;
@@ -55,6 +65,178 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
   bool _isExporting = false;
   Timer? _thresholdDebounceTimer;
 
+  Future<void> _runAIAnalysis() async {
+    if (_currentSession.detectedEvents.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Keine Geräusch-Events zum Analysieren vorhanden.')),
+      );
+      return;
+    }
+
+    double currentProgress = 0.05;
+    String currentStatus = 'Initialisiere KI-Audio-Analyse...';
+    StateSetter? dialogSetState;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogCtx) {
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            dialogSetState = setModalState;
+            final percent = (currentProgress * 100).toInt().clamp(0, 100);
+            return AlertDialog(
+              backgroundColor: AppTheme.surface,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+              title: const Row(
+                children: [
+                  Icon(Icons.auto_awesome, color: Color(0xFFFBBF24)),
+                  SizedBox(width: 10),
+                  Text('KI-Geräusch-Analyse', style: TextStyle(fontSize: 18)),
+                ],
+              ),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    currentStatus,
+                    style: const TextStyle(fontSize: 13, color: AppTheme.textSecondary),
+                  ),
+                  const SizedBox(height: 16),
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: LinearProgressIndicator(
+                      value: currentProgress,
+                      minHeight: 8,
+                      backgroundColor: AppTheme.surfaceLight,
+                      color: const Color(0xFFFBBF24),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: Text(
+                      '$percent %',
+                      style: const TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFFFBBF24),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+
+    try {
+      final updatedSession = await widget.repository.classifySessionWithAI(
+        _currentSession,
+        onProgress: (ratio, text) {
+          currentProgress = ratio;
+          currentStatus = text;
+          dialogSetState?.call(() {});
+        },
+      );
+
+      if (mounted) {
+        Navigator.of(context, rootNavigator: true).pop(); // Close dialog
+        setState(() {
+          _currentSession = updatedSession;
+        });
+
+        final speechCount = updatedSession.detectedEvents.where((e) => e.isSpeech).length;
+        final snoreCount = updatedSession.detectedEvents.where((e) => e.isSnore).length;
+        final noiseCount = updatedSession.detectedEvents.where((e) => e.isNoise).length;
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '✨ Analyse fertig: $speechCount× Schlafreden 🗣️, $snoreCount× Schnarchen 😴, $noiseCount× Nebengeräusche 🚗',
+            ),
+            backgroundColor: const Color(0xFF065F46),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        Navigator.of(context, rootNavigator: true).pop();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Fehler bei der KI-Analyse: $e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _showApiKeyDialog() async {
+    final geminiService = GeminiAudioService();
+    final currentKey = await geminiService.getApiKey();
+    final controller = TextEditingController(text: currentKey);
+
+    if (!mounted) return;
+
+    await showDialog(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          backgroundColor: AppTheme.surface,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: const Row(
+            children: [
+              Icon(Icons.key, color: Color(0xFFFBBF24)),
+              SizedBox(width: 10),
+              Text('Google Gemini API-Key', style: TextStyle(fontSize: 18)),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Dein 100 % kostenloser Google AI Studio Schlüssel für die Gemini 1.5 Flash Audio-Analyse.',
+                style: TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: controller,
+                decoration: InputDecoration(
+                  labelText: 'API-Key',
+                  hintText: 'AQ.Ab8RN...',
+                  filled: true,
+                  fillColor: AppTheme.surfaceLight,
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+                style: const TextStyle(fontSize: 13),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Abbrechen'),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                await geminiService.saveApiKey(controller.text);
+                if (ctx.mounted) Navigator.pop(ctx);
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('✅ Gemini API-Key gespeichert!')),
+                  );
+                }
+              },
+              child: const Text('Speichern'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   @override
   void initState() {
     super.initState();
@@ -62,14 +244,6 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
     _audioPlayer = AudioPlayer();
 
     _initAudioPlayer();
-
-    // If opening a session with previously swollen downsampled events, auto-recalculate from WAV
-    if (!kIsWeb &&
-        _currentSession.detectedEvents.isNotEmpty &&
-        _currentSession.detectedEvents.every((e) => e.duration.inMilliseconds >= 24000) &&
-        _currentSession.duration.inMinutes > 30) {
-      _applyThresholdUpdate(_thresholdDb);
-    }
   }
 
   Future<void> _initAudioPlayer() async {
@@ -96,6 +270,13 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
 
     _audioPlayer.positionStream.listen((pos) {
       _positionNotifier.value = pos;
+      if (_isHighlightPlayback && _currentHighlightIndex < _highlightQueue.length) {
+        final currentEv = _highlightQueue[_currentHighlightIndex];
+        final endTarget = currentEv.startOffset + currentEv.duration + const Duration(milliseconds: 350);
+        if (pos >= endTarget) {
+          _playNextHighlight();
+        }
+      }
     });
 
     _audioPlayer.playerStateStream.listen((state) {
@@ -108,6 +289,51 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
         }
       }
     });
+  }
+
+  Future<void> _startHighlightPlayback(List<DetectedEvent> events) async {
+    if (events.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Keine Geräusche zum Abspielen vorhanden.')),
+      );
+      return;
+    }
+    _highlightQueue = List.from(events);
+    _isHighlightPlayback = true;
+    _currentHighlightIndex = 0;
+    await _playHighlightAt(0);
+  }
+
+  Future<void> _playHighlightAt(int index) async {
+    if (index >= _highlightQueue.length) {
+      await _stopHighlightPlayback();
+      return;
+    }
+    _currentHighlightIndex = index;
+    final ev = _highlightQueue[index];
+    _selectedEventId = ev.id;
+    await _audioPlayer.setSpeed(_playbackSpeed);
+    await _audioPlayer.seek(ev.startOffset);
+    await _audioPlayer.play();
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _playNextHighlight() async {
+    await _playHighlightAt(_currentHighlightIndex + 1);
+  }
+
+  Future<void> _stopHighlightPlayback() async {
+    _isHighlightPlayback = false;
+    await _audioPlayer.pause();
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _togglePlaybackSpeed() async {
+    final speeds = [1.0, 1.25, 1.5, 2.0];
+    final nextIdx = (speeds.indexOf(_playbackSpeed) + 1) % speeds.length;
+    _playbackSpeed = speeds[nextIdx];
+    await _audioPlayer.setSpeed(_playbackSpeed);
+    if (mounted) setState(() {});
   }
 
   @override
@@ -141,6 +367,39 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
       _isNoiseFilterEnabled = true;
     });
     _debounceThresholdUpdate(val);
+  }
+
+  void _autoCalibrateNoiseFloor() {
+    final noiseDb = _currentSession.estimateNoiseFloorDb();
+    final newThreshold = (noiseDb + 1.0).clamp(-75.0, -10.0);
+    _onThresholdChanged(newThreshold);
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          '🪄 Grundrauschen gemessen (${noiseDb.toStringAsFixed(1)} dB) ➔ Filter auf ${newThreshold.toStringAsFixed(1)} dB (+1 dB) gesetzt!',
+        ),
+        backgroundColor: const Color(0xFF10B981),
+        duration: const Duration(seconds: 3),
+      ),
+    );
+  }
+
+  void _calibrateNoiseAtCurrentPosition() {
+    final currentPos = _positionNotifier.value;
+    final noiseDb = _currentSession.measureNoiseAtTime(currentPos);
+    final newThreshold = (noiseDb + 1.0).clamp(-75.0, -10.0);
+    _onThresholdChanged(newThreshold);
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          '🎯 Rauschen bei ${_formatDuration(currentPos)} gemessen (${noiseDb.toStringAsFixed(1)} dB) ➔ Filter auf ${newThreshold.toStringAsFixed(1)} dB (+1 dB) gesetzt!',
+        ),
+        backgroundColor: const Color(0xFF0284C7),
+        duration: const Duration(seconds: 3),
+      ),
+    );
   }
 
   void _toggleNoiseFilter(bool enabled) {
@@ -247,6 +506,9 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
 
   List<DetectedEvent> _getFilteredEvents() {
     return _currentSession.detectedEvents.where((e) {
+      if (_selectedCategoryFilter != null && e.category != _selectedCategoryFilter) {
+        return false;
+      }
       final durationSec = e.duration.inMilliseconds / 1000.0;
       final passesDuration = durationSec >= _minDurationFilterSec;
       final passesDb = e.maxDb >= _minDbFilter;
@@ -341,6 +603,30 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
         title: Text(_currentSession.title, overflow: TextOverflow.ellipsis),
         actions: [
           IconButton(
+            icon: const Icon(Icons.auto_awesome, color: Color(0xFFFBBF24)),
+            tooltip: 'Mit KI analysieren (Schlafreden & Geräusche)',
+            onPressed: _runAIAnalysis,
+          ),
+          IconButton(
+            icon: const Icon(Icons.file_upload_outlined, color: AppTheme.primary),
+            tooltip: 'Ganze Aufnahme als WAV exportieren',
+            onPressed: () async {
+              if (kIsWeb) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Export ist auf dem Smartphone verfügbar.')),
+                );
+                return;
+              }
+              final file = AppFile(_currentSession.filePath);
+              if (await file.exists()) {
+                await Share.shareXFiles(
+                  [XFile(_currentSession.filePath, mimeType: 'audio/wav', name: '${_currentSession.id}.wav')],
+                  text: 'SleepSpeak Aufnahme: ${_currentSession.title}',
+                );
+              }
+            },
+          ),
+          IconButton(
             icon: Icon(
               _currentSession.isFavorite ? Icons.star : Icons.star_border,
               color: _currentSession.isFavorite ? Colors.amber : Colors.white,
@@ -361,21 +647,17 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
           children: [
             // Waveform Amplitude Visualizer Card (Lag-Free Engine with Magnifying Glass Zoom Controls)
             _buildWaveformCard(),
+            const SizedBox(height: 14),
+
+            // AI Noise & Speech Classifier Banner (with Category Summary Tags)
+            _buildAIAnalysisBanner(),
+            const SizedBox(height: 14),
+
+            // Highlights Auto-Skip Player Bar (Play all noises/speech with auto silence-skipping)
+            _buildHighlightPlayerBar(filteredEvents),
             const SizedBox(height: 16),
 
-            // Noise Threshold & Filter Slider Card (With Checkbox to Turn Off Filter Completely)
-            _buildThresholdCard(),
-            const SizedBox(height: 16),
-
-            // Snippet Selector & Share Controls
-            _buildSnippetShareCard(startMs, endMs),
-            const SizedBox(height: 20),
-
-            // Event List Filter Controls Card (Filter by Duration & Min Decibel)
-            _buildEventFilterCard(filteredEvents.length),
-            const SizedBox(height: 16),
-
-            // Events List Header
+            // Events List Header & Category Filter Chips
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
@@ -392,21 +674,31 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
                 ),
               ],
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 10),
 
-            // Events List
+            // Category Filter Chips (Dynamic emojis & category filters)
+            _buildCategoryFilterChips(),
+            const SizedBox(height: 14),
+
+            // Events List (Main focus of the screen)
             if (filteredEvents.isEmpty)
               Container(
                 width: double.infinity,
-                padding: const EdgeInsets.all(20),
+                padding: const EdgeInsets.all(24),
                 decoration: BoxDecoration(
                   color: AppTheme.surface,
-                  borderRadius: BorderRadius.circular(12),
+                  borderRadius: BorderRadius.circular(16),
                 ),
-                child: const Text(
-                  'Keine Geräusche passen zu den gewählten Filtern.\nPasse die Mindestdauer oder Mindest-Lautstärke oben an.',
-                  style: TextStyle(color: AppTheme.textSecondary, fontSize: 13),
-                  textAlign: TextAlign.center,
+                child: const Column(
+                  children: [
+                    Icon(Icons.nightlight_round, size: 36, color: AppTheme.textSecondary),
+                    SizedBox(height: 8),
+                    Text(
+                      'Keine Geräusche für die gewählten Filter vorhanden.',
+                      style: TextStyle(color: AppTheme.textSecondary, fontSize: 13),
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
                 ),
               )
             else
@@ -419,6 +711,45 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
                   return _buildEventItem(event);
                 },
               ),
+
+            const SizedBox(height: 24),
+
+            // Expandable Technical Tools (Noise Suppression Sliders, Snippet Export, Fine-tuning)
+            _buildAdvancedToolsAccordion(startMs, endMs, filteredEvents.length),
+            const SizedBox(height: 20),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAdvancedToolsAccordion(int startMs, int endMs, int filteredCount) {
+    return Container(
+      decoration: BoxDecoration(
+        color: AppTheme.surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppTheme.surfaceLight),
+      ),
+      child: Theme(
+        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+        child: ExpansionTile(
+          initiallyExpanded: false,
+          leading: const Icon(Icons.tune, color: AppTheme.accent),
+          title: const Text(
+            'Erweiterte Werkzeuge & Filter',
+            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+          ),
+          subtitle: const Text(
+            'Schwellenwert-Filter, dB-Regler & WhatsApp Zuschnitt',
+            style: TextStyle(fontSize: 11, color: AppTheme.textSecondary),
+          ),
+          childrenPadding: const EdgeInsets.all(12),
+          children: [
+            _buildThresholdCard(),
+            const SizedBox(height: 12),
+            _buildSnippetShareCard(startMs, endMs),
+            const SizedBox(height: 12),
+            _buildEventFilterCard(filteredCount),
           ],
         ),
       ),
@@ -526,6 +857,19 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
                     ),
                   ],
                 ),
+              ),
+
+              // Quick 1-Click Noise Floor Calibrate (+1 dB) Button
+              OutlinedButton.icon(
+                onPressed: _autoCalibrateNoiseFloor,
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: const Color(0xFF34D399),
+                  side: const BorderSide(color: Color(0xFF059669)),
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  visualDensity: VisualDensity.compact,
+                ),
+                icon: const Icon(Icons.auto_fix_high, size: 14, color: Color(0xFF34D399)),
+                label: const Text('🪄 Rauschen filtern', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
               ),
             ],
           ),
@@ -657,27 +1001,87 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
             ),
           ),
           if (_isNoiseFilterEnabled) ...[
+            const SizedBox(height: 12),
+
+            // Smart Noise Floor Calibration Buttons
+            Row(
+              children: [
+                Expanded(
+                  child: ElevatedButton.icon(
+                    onPressed: _autoCalibrateNoiseFloor,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF065F46),
+                      foregroundColor: const Color(0xFF34D399),
+                      padding: const EdgeInsets.symmetric(vertical: 10),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    ),
+                    icon: const Icon(Icons.auto_fix_high, size: 16),
+                    label: const Text(
+                      '🪄 Auto-Kalibrieren',
+                      style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _calibrateNoiseAtCurrentPosition,
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: const Color(0xFF38BDF8),
+                      side: const BorderSide(color: Color(0xFF0284C7)),
+                      padding: const EdgeInsets.symmetric(vertical: 10),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    ),
+                    icon: const Icon(Icons.my_location, size: 16),
+                    label: const Text(
+                      '🎯 Hier messen',
+                      style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: AppTheme.surfaceLight.withValues(alpha: 0.5),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Row(
+                children: [
+                  Icon(Icons.info_outline, size: 14, color: Color(0xFF38BDF8)),
+                  SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      'Misst das Raumrauschen und setzt den Filter exakt 1 dB darüber (+1 dB), sodass das Hintergrundrauschen komplett ausgegraut wird.',
+                      style: TextStyle(fontSize: 11, color: AppTheme.textSecondary),
+                    ),
+                  ),
+                ],
+              ),
+            ),
             const SizedBox(height: 8),
             Row(
               children: [
-                const Text('Empfindlich (-50 dB)', style: TextStyle(fontSize: 10, color: AppTheme.textSecondary)),
+                const Text('Empfindlich (-75 dB)', style: TextStyle(fontSize: 10, color: AppTheme.textSecondary)),
                 Expanded(
                   child: Slider(
-                    value: _thresholdDb,
-                    min: -55.0,
-                    max: -15.0,
-                    divisions: 40,
+                    value: _thresholdDb.clamp(-75.0, -10.0),
+                    min: -75.0,
+                    max: -10.0,
+                    divisions: 65,
                     activeColor: AppTheme.accent,
                     label: '${_thresholdDb.toStringAsFixed(1)} dB',
                     onChanged: _onThresholdChanged,
                   ),
                 ),
-                const Text('Streng (-15 dB)', style: TextStyle(fontSize: 10, color: AppTheme.textSecondary)),
+                const Text('Streng (-10 dB)', style: TextStyle(fontSize: 10, color: AppTheme.textSecondary)),
               ],
             ),
             Center(
               child: Text(
-                'Aktueller Filter: ${_thresholdDb.toStringAsFixed(1)} dB',
+                'Aktueller Filter: ${_thresholdDb.toStringAsFixed(1)} dB (alles darunter wird ausgegraut)',
                 style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: AppTheme.primaryGlow),
               ),
             ),
@@ -840,7 +1244,7 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
             ],
           ),
 
-          // Filter by Min Decibel Slider (-60 dB to -20 dB)
+          // Filter by Min Decibel Slider (-75 dB to -20 dB)
           Row(
             children: [
               Text(
@@ -849,10 +1253,10 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
               ),
               Expanded(
                 child: Slider(
-                  value: _minDbFilter,
-                  min: -60.0,
+                  value: _minDbFilter.clamp(-75.0, -20.0),
+                  min: -75.0,
                   max: -20.0,
-                  divisions: 40,
+                  divisions: 55,
                   activeColor: AppTheme.primaryGlow,
                   onChanged: (v) {
                     setState(() {
@@ -868,60 +1272,720 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
     );
   }
 
+  Color _getCategoryColor(EventCategory category) {
+    switch (category) {
+      case EventCategory.speech:
+        return const Color(0xFF10B981); // Emerald
+      case EventCategory.snore:
+        return const Color(0xFF8B5CF6); // Purple
+      case EventCategory.movement:
+        return const Color(0xFF3B82F6); // Blue
+      case EventCategory.traffic:
+        return const Color(0xFFF97316); // Orange
+      case EventCategory.household:
+        return const Color(0xFFEAB308); // Yellow
+      case EventCategory.cough:
+        return const Color(0xFFEC4899); // Pink
+      case EventCategory.pet:
+        return const Color(0xFF14B8A6); // Teal
+      case EventCategory.noise:
+        return const Color(0xFF64748B); // Slate
+      case EventCategory.general:
+        return AppTheme.primary; // Indigo
+    }
+  }
+
+  String _getCategoryLabel(EventCategory category) {
+    switch (category) {
+      case EventCategory.speech:
+        return 'Schlafreden';
+      case EventCategory.snore:
+        return 'Schnarchen';
+      case EventCategory.movement:
+        return 'Bett & Bewegung';
+      case EventCategory.traffic:
+        return 'Verkehr';
+      case EventCategory.household:
+        return 'Haushalt & Türen';
+      case EventCategory.cough:
+        return 'Husten & Niesen';
+      case EventCategory.pet:
+        return 'Haustiere';
+      case EventCategory.noise:
+        return 'Nebengeräusch';
+      case EventCategory.general:
+        return 'Geräusch';
+    }
+  }
+
+  String _getCategoryEmoji(EventCategory category) {
+    switch (category) {
+      case EventCategory.speech:
+        return '🗣️';
+      case EventCategory.snore:
+        return '😴';
+      case EventCategory.movement:
+        return '🛏️';
+      case EventCategory.traffic:
+        return '🚗';
+      case EventCategory.household:
+        return '🚪';
+      case EventCategory.cough:
+        return '🤧';
+      case EventCategory.pet:
+        return '🐾';
+      case EventCategory.noise:
+        return '🔊';
+      case EventCategory.general:
+        return '🔊';
+    }
+  }
+
+  Widget _buildAIAnalysisBanner() {
+    final Map<EventCategory, int> counts = {};
+    for (final e in _currentSession.detectedEvents) {
+      counts[e.category] = (counts[e.category] ?? 0) + 1;
+    }
+
+    final hasClassifiedEvents = counts.keys.any((k) => k != EventCategory.general);
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [Color(0xFF1E1B4B), Color(0xFF312E81)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFFBBF24).withValues(alpha: 0.4)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFBBF24).withValues(alpha: 0.2),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: const Icon(Icons.auto_awesome, color: Color(0xFFFBBF24), size: 20),
+              ),
+              const SizedBox(width: 10),
+              const Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'KI-Geräuscherkennung',
+                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Colors.white),
+                    ),
+                    Text(
+                      'Erkennt Sprache, Schnarchen, Bett, Autos & mehr',
+                      style: TextStyle(fontSize: 11, color: AppTheme.textSecondary),
+                    ),
+                  ],
+                ),
+              ),
+              IconButton(
+                icon: const Icon(Icons.key, color: Color(0xFFFBBF24), size: 18),
+                tooltip: 'Google Gemini API-Key anpassen',
+                onPressed: _showApiKeyDialog,
+              ),
+              const SizedBox(width: 4),
+              ElevatedButton.icon(
+                onPressed: _runAIAnalysis,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFFFBBF24),
+                  foregroundColor: Colors.black,
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                ),
+                icon: const Icon(Icons.bolt, size: 16),
+                label: const Text('KI-Analyse', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+              ),
+            ],
+          ),
+          if (hasClassifiedEvents) ...[
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                for (final cat in EventCategory.values)
+                  if ((counts[cat] ?? 0) > 0)
+                    _buildCountTag(
+                      '${cat == EventCategory.general ? "🔊" : _getCategoryEmoji(cat)} ${counts[cat]}× ${cat == EventCategory.general ? "Ungeprüft" : _getCategoryLabel(cat)}',
+                      _getCategoryColor(cat),
+                    ),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCountTag(String text, Color bg) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: bg.withValues(alpha: 0.3),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: bg.withValues(alpha: 0.6)),
+      ),
+      child: Text(text, style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: Colors.white)),
+    );
+  }
+
+  Widget _buildCategoryFilterChips() {
+    final Map<EventCategory, int> counts = {};
+    for (final e in _currentSession.detectedEvents) {
+      counts[e.category] = (counts[e.category] ?? 0) + 1;
+    }
+
+    final activeCategories = EventCategory.values.where((cat) => (counts[cat] ?? 0) > 0).toList();
+
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        children: [
+          _buildFilterChip(
+            label: 'Alle (${_currentSession.detectedEvents.length})',
+            isSelected: _selectedCategoryFilter == null,
+            onSelected: () => setState(() => _selectedCategoryFilter = null),
+            activeColor: AppTheme.primary,
+          ),
+          for (final cat in activeCategories) ...[
+            const SizedBox(width: 8),
+            _buildFilterChip(
+              label: '${_getCategoryEmoji(cat)} ${_getCategoryLabel(cat)} (${counts[cat]})',
+              isSelected: _selectedCategoryFilter == cat,
+              onSelected: () => setState(() => _selectedCategoryFilter = cat),
+              activeColor: _getCategoryColor(cat),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildFilterChip({
+    required String label,
+    required bool isSelected,
+    required VoidCallback onSelected,
+    required Color activeColor,
+  }) {
+    return ChoiceChip(
+      label: Text(label),
+      selected: isSelected,
+      onSelected: (_) => onSelected(),
+      selectedColor: activeColor.withValues(alpha: 0.3),
+      backgroundColor: AppTheme.surface,
+      labelStyle: TextStyle(
+        fontSize: 12,
+        fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+        color: isSelected ? Colors.white : AppTheme.textSecondary,
+      ),
+      side: BorderSide(color: isSelected ? activeColor : AppTheme.surfaceLight),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+    );
+  }
+
+  Widget _buildHighlightPlayerBar(List<DetectedEvent> events) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: _isHighlightPlayback
+              ? [const Color(0xFF065F46), const Color(0xFF047857)]
+              : [AppTheme.surface, const Color(0xFF1E1B4B)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: _isHighlightPlayback ? const Color(0xFF10B981) : AppTheme.primary.withValues(alpha: 0.3),
+          width: _isHighlightPlayback ? 2.0 : 1.0,
+        ),
+      ),
+      child: Row(
+        children: [
+          ElevatedButton.icon(
+            onPressed: () {
+              if (_isHighlightPlayback) {
+                _stopHighlightPlayback();
+              } else {
+                _startHighlightPlayback(events);
+              }
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: _isHighlightPlayback ? Colors.amber : const Color(0xFF10B981),
+              foregroundColor: Colors.black,
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+            icon: Icon(_isHighlightPlayback ? Icons.stop : Icons.play_arrow, size: 20),
+            label: Text(
+              _isHighlightPlayback ? 'Stopp' : 'Highlights abspielen',
+              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  _isHighlightPlayback
+                      ? 'Highlight ${_currentHighlightIndex + 1} von ${_highlightQueue.length}'
+                      : 'Stille überspringen',
+                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.white),
+                  overflow: TextOverflow.ellipsis,
+                ),
+                Text(
+                  _isHighlightPlayback
+                      ? 'Spielt alle Geräusche nacheinander'
+                      : '${events.length} Geräusche ohne Wartezeit',
+                  style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
+          ),
+          TextButton(
+            onPressed: _togglePlaybackSpeed,
+            style: TextButton.styleFrom(
+              backgroundColor: AppTheme.surfaceLight,
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            child: Text(
+              '${_playbackSpeed}x',
+              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.amber),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _toggleEventFavorite(DetectedEvent event) async {
+    await widget.repository.toggleEventFavorite(_currentSession.id, event.id);
+    final updatedEvents = _currentSession.detectedEvents.map((e) {
+      if (e.id == event.id) {
+        return e.copyWith(isFavorite: !e.isFavorite);
+      }
+      return e;
+    }).toList();
+    setState(() {
+      _currentSession = _currentSession.copyWith(detectedEvents: updatedEvents);
+    });
+  }
+
+  Future<void> _removeTagFromEvent(DetectedEvent event, String tag) async {
+    final updatedTags = List<String>.from(event.tags)..remove(tag);
+    await widget.repository.updateEventTags(_currentSession.id, event.id, updatedTags);
+    final updatedEvents = _currentSession.detectedEvents.map((e) {
+      if (e.id == event.id) {
+        return e.copyWith(tags: updatedTags);
+      }
+      return e;
+    }).toList();
+    setState(() {
+      _currentSession = _currentSession.copyWith(detectedEvents: updatedEvents);
+    });
+  }
+
+  void _showEventTagDialog(DetectedEvent event) {
+    final textController = TextEditingController();
+    final currentTags = List<String>.from(event.tags);
+    final presetTags = ['⭐ Favorit', '🤣 Lustig', '🔒 Behalten', '👻 Gruselig', '💬 Schlafreden', '🤔 Unverständlich'];
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: AppTheme.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            return Padding(
+              padding: EdgeInsets.only(
+                left: 20,
+                right: 20,
+                top: 20,
+                bottom: MediaQuery.of(context).viewInsets.bottom + 20,
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF38BDF8).withValues(alpha: 0.15),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: const Icon(Icons.label, color: Color(0xFF38BDF8)),
+                      ),
+                      const SizedBox(width: 12),
+                      const Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Clip taggen & schützen',
+                              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                            ),
+                            Text(
+                              'Getaggte Clips werden nie nach 7 Tagen gelöscht',
+                              style: TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+
+                  const Text('Vorschläge:', style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 6,
+                    children: presetTags.map((tag) {
+                      final isSelected = currentTags.contains(tag);
+                      return FilterChip(
+                        label: Text(tag),
+                        selected: isSelected,
+                        selectedColor: const Color(0xFF38BDF8).withValues(alpha: 0.3),
+                        onSelected: (selected) {
+                          setModalState(() {
+                            if (selected) {
+                              if (!currentTags.contains(tag)) currentTags.add(tag);
+                            } else {
+                              currentTags.remove(tag);
+                            }
+                          });
+                        },
+                      );
+                    }).toList(),
+                  ),
+                  const SizedBox(height: 16),
+
+                  TextField(
+                    controller: textController,
+                    decoration: InputDecoration(
+                      hintText: 'Eigenen Tag eingeben...',
+                      hintStyle: const TextStyle(fontSize: 13, color: AppTheme.textSecondary),
+                      filled: true,
+                      fillColor: AppTheme.surfaceLight,
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                      suffixIcon: IconButton(
+                        icon: const Icon(Icons.add, color: Color(0xFF38BDF8)),
+                        onPressed: () {
+                          final text = textController.text.trim();
+                          if (text.isNotEmpty && !currentTags.contains(text)) {
+                            setModalState(() {
+                              currentTags.add(text);
+                            });
+                            textController.clear();
+                          }
+                        },
+                      ),
+                    ),
+                    onSubmitted: (text) {
+                      final val = text.trim();
+                      if (val.isNotEmpty && !currentTags.contains(val)) {
+                        setModalState(() {
+                          currentTags.add(val);
+                        });
+                        textController.clear();
+                      }
+                    },
+                  ),
+                  const SizedBox(height: 20),
+
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      onPressed: () async {
+                        Navigator.pop(ctx);
+                        await widget.repository.updateEventTags(_currentSession.id, event.id, currentTags);
+                        final updatedEvents = _currentSession.detectedEvents.map((e) {
+                          if (e.id == event.id) {
+                            return e.copyWith(tags: currentTags);
+                          }
+                          return e;
+                        }).toList();
+                        setState(() {
+                          _currentSession = _currentSession.copyWith(detectedEvents: updatedEvents);
+                        });
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('🛡️ Tags gespeichert! Dieser Clip ist vor der 7-Tage-Löschung geschützt.'),
+                              backgroundColor: Color(0xFF10B981),
+                            ),
+                          );
+                        }
+                      },
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF38BDF8),
+                        foregroundColor: Colors.black,
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      ),
+                      icon: const Icon(Icons.check, size: 18),
+                      label: const Text('Speichern & Schützen', style: TextStyle(fontWeight: FontWeight.bold)),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
   Widget _buildEventItem(DetectedEvent event) {
     final isSelected = (_selectedEventId == event.id);
+    final categoryColor = _getCategoryColor(event.category);
 
     return Card(
-      margin: const EdgeInsets.only(bottom: 10),
+      margin: const EdgeInsets.only(bottom: 12),
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(16),
         side: BorderSide(
-          color: isSelected ? AppTheme.primaryGlow : Colors.transparent,
-          width: isSelected ? 2.5 : 0.0,
+          color: isSelected ? AppTheme.primaryGlow : categoryColor.withValues(alpha: 0.35),
+          width: isSelected ? 2.5 : 1.0,
         ),
       ),
       color: isSelected ? const Color(0xFF1E1B4B) : AppTheme.surface,
       elevation: isSelected ? 4 : 1,
-      child: ListTile(
-        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-        leading: GestureDetector(
-          onTap: () => _selectAndPlayEvent(event),
-          child: CircleAvatar(
-            backgroundColor: isSelected ? AppTheme.primaryGlow : const Color(0xFF312E81),
-            child: Icon(
-              isSelected && _isPlaying ? Icons.pause_circle_filled : Icons.play_circle_fill,
-              color: isSelected ? Colors.black : AppTheme.primaryGlow,
-              size: 24,
-            ),
-          ),
-        ),
-        title: Text(
-          event.formatClockTime(_currentSession.startTime),
-          style: TextStyle(
-            fontWeight: FontWeight.bold,
-            fontSize: 14,
-            color: isSelected ? AppTheme.primaryGlow : Colors.white,
-          ),
-          overflow: TextOverflow.ellipsis,
-        ),
-        subtitle: Text(
-          'Dauer: ${(event.duration.inMilliseconds / 1000).toStringAsFixed(1)}s • Max: ${event.maxDb.toStringAsFixed(1)} dB',
-          style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
-          overflow: TextOverflow.ellipsis,
-        ),
-        trailing: Row(
-          mainAxisSize: MainAxisSize.min,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Direct WhatsApp Share Button for this specific event
-            IconButton(
-              icon: const Icon(Icons.share, color: Color(0xFF25D366), size: 20),
-              tooltip: 'Diesen Clip per WhatsApp teilen',
-              onPressed: () => _shareSpecificEvent(event),
+            // Top Row: Play Avatar, Time & Category Badge (Roomy and uncrowded)
+            Row(
+              children: [
+                GestureDetector(
+                  onTap: () => _selectAndPlayEvent(event),
+                  child: CircleAvatar(
+                    backgroundColor: isSelected ? AppTheme.primaryGlow : categoryColor.withValues(alpha: 0.2),
+                    radius: 20,
+                    child: isSelected && _isPlaying
+                        ? const Icon(Icons.pause, color: Colors.black, size: 22)
+                        : Text(event.categoryEmoji, style: const TextStyle(fontSize: 20)),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Text(
+                            event.formatShortTime(_currentSession.startTime),
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 15,
+                              color: isSelected ? AppTheme.primaryGlow : Colors.white,
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            event.formatPeriod(_currentSession.startTime),
+                            style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        'Dauer: ${(event.duration.inMilliseconds / 1000).toStringAsFixed(1)}s • Max: ${event.maxDb.toStringAsFixed(1)} dB${event.confidence > 0 ? ' • ${(event.confidence * 100).toInt()}% KI' : ''}',
+                        style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: categoryColor.withValues(alpha: 0.2),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: categoryColor.withValues(alpha: 0.6)),
+                  ),
+                  child: Text(
+                    '${event.categoryEmoji} ${event.subType ?? event.categoryLabel}',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      color: categoryColor,
+                    ),
+                  ),
+                ),
+              ],
             ),
-            const Icon(Icons.arrow_forward_ios, size: 14, color: AppTheme.textSecondary),
+
+            // Speech transcription quote box (if speech detected)
+            if (event.transcription != null &&
+                event.transcription!.isNotEmpty &&
+                event.transcription!.toLowerCase() != 'null') ...[
+              const SizedBox(height: 10),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF10B981).withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: const Color(0xFF10B981).withValues(alpha: 0.4)),
+                ),
+                child: Row(
+                  children: [
+                    const Text('🗣️ ', style: TextStyle(fontSize: 14)),
+                    Expanded(
+                      child: Text(
+                        '„${event.transcription}“',
+                        style: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.bold,
+                          color: Color(0xFF34D399),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+
+            // AI Explanation box (if explanation exists)
+            if (event.explanation != null && event.explanation!.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: AppTheme.surfaceLight.withValues(alpha: 0.5),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('✨ ', style: TextStyle(fontSize: 12)),
+                    Expanded(
+                      child: Text(
+                        event.explanation!,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Color(0xFFCBD5E1),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+
+            // Bottom Row: Tag Chips on the Left, Action Buttons on the Right
+            const SizedBox(height: 8),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                Expanded(
+                  child: Wrap(
+                    spacing: 6,
+                    runSpacing: 4,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      for (final tag in event.tags)
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF0284C7).withValues(alpha: 0.2),
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(color: const Color(0xFF38BDF8).withValues(alpha: 0.5)),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                tag,
+                                style: const TextStyle(fontSize: 11, color: Color(0xFF38BDF8), fontWeight: FontWeight.bold),
+                              ),
+                              const SizedBox(width: 4),
+                              GestureDetector(
+                                onTap: () => _removeTagFromEvent(event, tag),
+                                child: const Icon(Icons.close, size: 12, color: Color(0xFF38BDF8)),
+                              ),
+                            ],
+                          ),
+                        ),
+                      if (event.isProtected)
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF10B981).withValues(alpha: 0.2),
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(color: const Color(0xFF10B981).withValues(alpha: 0.5)),
+                          ),
+                          child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.shield_outlined, size: 12, color: Color(0xFF34D399)),
+                              SizedBox(width: 4),
+                              Text(
+                                'Löschgeschützt',
+                                style: TextStyle(fontSize: 10, color: Color(0xFF34D399), fontWeight: FontWeight.bold),
+                              ),
+                            ],
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton(
+                      icon: Icon(
+                        event.isFavorite ? Icons.star : Icons.star_border,
+                        color: event.isFavorite ? Colors.amber : AppTheme.textSecondary,
+                        size: 22,
+                      ),
+                      tooltip: event.isFavorite ? 'Aus Favoriten entfernen' : 'Als Favorit markieren (Löschschutz)',
+                      visualDensity: VisualDensity.compact,
+                      onPressed: () => _toggleEventFavorite(event),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.label_outline, color: Color(0xFF38BDF8), size: 20),
+                      tooltip: 'Tags verwalten (Löschschutz)',
+                      visualDensity: VisualDensity.compact,
+                      onPressed: () => _showEventTagDialog(event),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.share, color: Color(0xFF25D366), size: 20),
+                      tooltip: 'Diesen Clip per WhatsApp teilen',
+                      visualDensity: VisualDensity.compact,
+                      onPressed: () => _shareSpecificEvent(event),
+                    ),
+                  ],
+                ),
+              ],
+            ),
           ],
         ),
-        onTap: () => _selectAndPlayEvent(event),
       ),
     );
   }
