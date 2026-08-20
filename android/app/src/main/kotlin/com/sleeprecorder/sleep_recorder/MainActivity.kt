@@ -15,9 +15,26 @@ import java.io.FileInputStream
 class MainActivity : FlutterActivity() {
     private val SERVICE_CHANNEL = "com.sleeprecorder.app/foreground_service"
     private val ENCODER_CHANNEL = "com.sleeprecorder.app/audio_encoder"
+    private val PICKER_CHANNEL = "com.sleeprecorder.app/file_picker"
+
+    private var pendingPickerResult: MethodChannel.Result? = null
+    private val PICK_AUDIO_CODE = 9982
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, PICKER_CHANNEL).setMethodCallHandler { call, result ->
+            if (call.method == "pickAudioFile") {
+                pendingPickerResult = result
+                val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
+                    type = "audio/*"
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                }
+                startActivityForResult(Intent.createChooser(intent, "Audioaufnahme auswählen"), PICK_AUDIO_CODE)
+            } else {
+                result.notImplemented()
+            }
+        }
 
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, SERVICE_CHANNEL).setMethodCallHandler { call, result ->
             when (call.method) {
@@ -175,5 +192,36 @@ class MainActivity : FlutterActivity() {
 
         val out = File(outputM4aPath)
         return out.exists() && out.length() > 0
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == PICK_AUDIO_CODE) {
+            val uri = data?.data
+            if (resultCode == RESULT_OK && uri != null) {
+                Thread {
+                    try {
+                        val tempFile = File(cacheDir, "imported_${System.currentTimeMillis()}.wav")
+                        contentResolver.openInputStream(uri)?.use { input ->
+                            tempFile.outputStream().use { output ->
+                                input.copyTo(output)
+                            }
+                        }
+                        runOnUiThread {
+                            pendingPickerResult?.success(tempFile.absolutePath)
+                            pendingPickerResult = null
+                        }
+                    } catch (e: Exception) {
+                        runOnUiThread {
+                            pendingPickerResult?.error("FILE_ERROR", e.message, null)
+                            pendingPickerResult = null
+                        }
+                    }
+                }.start()
+            } else {
+                pendingPickerResult?.success(null)
+                pendingPickerResult = null
+            }
+        }
     }
 }

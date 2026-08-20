@@ -11,8 +11,10 @@ class AppFile {
   Future<String> readAsString() async => '';
   Future<void> writeAsString(String contents, {bool flush = false, bool append = false}) async {}
   Future<void> delete() async {}
+  Future<AppFile> copy(String newPath) async => AppFile(newPath);
   Future<Uint8List> readAsBytes() async => Uint8List(0);
   Future<void> writeAsBytes(List<int> bytes) async {}
+  Future<Uint8List> readRange(int start, int length) async => Uint8List(0);
 }
 
 class AppDirectory {

@@ -27,27 +27,6 @@ class RecordingRepository extends ChangeNotifier {
       // Run automatic 7-day retention cleanup on launch & crash recovery
       await _storageService.runRetentionCleanup(retentionDays: 7);
       _sessions = await _storageService.loadAllSessions();
-
-      // Auto-repair any past sessions where events had downsampled durations (e.g. 24.6s bug)
-      if (!kIsWeb) {
-        for (int i = 0; i < _sessions.length; i++) {
-          final s = _sessions[i];
-          final hasSwollenEvents = s.detectedEvents.isNotEmpty &&
-              s.detectedEvents.every((e) => e.duration.inMilliseconds >= 24000) &&
-              s.duration.inMinutes > 30;
-          if (hasSwollenEvents) {
-            try {
-              final audioFile = AppFile(s.filePath);
-              if (await audioFile.exists()) {
-                final result = await _storageService.wavAnalyzer.analyzeWavFile(audioFile, thresholdDb: _defaultNoiseThresholdDb);
-                final repaired = s.copyWith(detectedEvents: result.detectedEvents);
-                _sessions[i] = repaired;
-                await _storageService.saveSessionMetadata(repaired);
-              }
-            } catch (_) {}
-          }
-        }
-      }
     } finally {
       _isLoading = false;
       notifyListeners();
@@ -185,6 +164,40 @@ class RecordingRepository extends ChangeNotifier {
     }
   }
 
+  Future<void> toggleEventFavorite(String sessionId, String eventId) async {
+    final idx = _sessions.indexWhere((s) => s.id == sessionId);
+    if (idx != -1) {
+      final session = _sessions[idx];
+      final updatedEvents = session.detectedEvents.map((e) {
+        if (e.id == eventId) {
+          return e.copyWith(isFavorite: !e.isFavorite);
+        }
+        return e;
+      }).toList();
+      final updated = session.copyWith(detectedEvents: updatedEvents);
+      _sessions[idx] = updated;
+      await _storageService.saveSessionMetadata(updated);
+      notifyListeners();
+    }
+  }
+
+  Future<void> updateEventTags(String sessionId, String eventId, List<String> tags) async {
+    final idx = _sessions.indexWhere((s) => s.id == sessionId);
+    if (idx != -1) {
+      final session = _sessions[idx];
+      final updatedEvents = session.detectedEvents.map((e) {
+        if (e.id == eventId) {
+          return e.copyWith(tags: tags);
+        }
+        return e;
+      }).toList();
+      final updated = session.copyWith(detectedEvents: updatedEvents);
+      _sessions[idx] = updated;
+      await _storageService.saveSessionMetadata(updated);
+      notifyListeners();
+    }
+  }
+
   Future<void> updateSessionEvents(String sessionId, double thresholdDb) async {
     final idx = _sessions.indexWhere((s) => s.id == sessionId);
     if (idx != -1) {
@@ -220,5 +233,35 @@ class RecordingRepository extends ChangeNotifier {
       _sessions.removeAt(idx);
       notifyListeners();
     }
+  }
+
+  Future<String?> createBackupZip({void Function(double progress, String status)? onProgress}) async {
+    return _storageService.createBackupZip(onProgress: onProgress);
+  }
+
+  Future<List<String>> getBackupFiles() async {
+    return _storageService.getAllBackupFilePaths();
+  }
+
+  Future<RecordingSession> classifySessionWithAI(
+    RecordingSession session, {
+    void Function(double progress, String status)? onProgress,
+  }) async {
+    final updated = await _storageService.classifySessionWithAI(session, onProgress: onProgress);
+    final idx = _sessions.indexWhere((s) => s.id == session.id);
+    if (idx != -1) {
+      _sessions[idx] = updated;
+    }
+    notifyListeners();
+    return updated;
+  }
+
+  Future<RecordingSession?> importRecording(String filePath, {String? customTitle}) async {
+    final session = await _storageService.importAudioFile(filePath, customTitle: customTitle);
+    if (session != null) {
+      _sessions = await _storageService.loadAllSessions();
+      notifyListeners();
+    }
+    return session;
   }
 }
