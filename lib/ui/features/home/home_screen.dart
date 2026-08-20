@@ -2,8 +2,10 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:intl/intl.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 import '../../../data/repositories/recording_repository.dart';
 import '../../../data/services/native_file_picker_service.dart';
 import '../../../data/services/notification_service.dart';
@@ -35,6 +37,7 @@ class _HomeScreenState extends State<HomeScreen> {
   int _startDelayMinutes = 10;
   bool _isDelayedStartActive = false;
   int _remainingDelaySeconds = 0;
+  DateTime? _targetDelayedStartTime;
   Timer? _delayCountdownTimer;
 
   @override
@@ -89,48 +92,86 @@ class _HomeScreenState extends State<HomeScreen> {
     super.dispose();
   }
 
-  void _startDelayedRecording() {
+  Future<void> _startDelayedRecording() async {
+    final now = DateTime.now();
+    final targetTime = now.add(Duration(minutes: _startDelayMinutes));
+    final targetTimeFormatted = DateFormat('HH:mm').format(targetTime);
+
     setState(() {
       _isDelayedStartActive = true;
+      _targetDelayedStartTime = targetTime;
       _remainingDelaySeconds = _startDelayMinutes * 60;
     });
 
+    // 1. Keep CPU awake even if phone screen is locked/sleeping
+    if (!kIsWeb) {
+      await WakelockPlus.enable();
+    }
+
+    // 2. Start Foreground Service so Android 14 Doze mode never pauses the timer
+    await _notificationService.showDelayedTimerNotification(
+      timeRemainingText: '$_startDelayMinutes Min',
+      targetStartTime: targetTimeFormatted,
+    );
+
     _delayCountdownTimer?.cancel();
-    _delayCountdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+    _delayCountdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) async {
       if (!mounted) {
         timer.cancel();
         return;
       }
-      if (_remainingDelaySeconds <= 1) {
+
+      final currentTime = DateTime.now();
+      if (_targetDelayedStartTime == null ||
+          currentTime.isAfter(_targetDelayedStartTime!) ||
+          currentTime.isAtSameMomentAs(_targetDelayedStartTime!)) {
         timer.cancel();
         setState(() {
           _isDelayedStartActive = false;
+          _targetDelayedStartTime = null;
           _remainingDelaySeconds = 0;
         });
-        _toggleSleepRecording();
+        await _toggleSleepRecording();
       } else {
+        final diffSeconds = _targetDelayedStartTime!.difference(currentTime).inSeconds;
         setState(() {
-          _remainingDelaySeconds--;
+          _remainingDelaySeconds = diffSeconds > 0 ? diffSeconds : 0;
         });
+
+        // Update notification every 30 seconds
+        if (diffSeconds > 0 && diffSeconds % 30 == 0) {
+          final remMins = (diffSeconds / 60).ceil();
+          final remText = remMins > 1 ? '$remMins Min' : '$diffSeconds Sek';
+          await _notificationService.showDelayedTimerNotification(
+            timeRemainingText: remText,
+            targetStartTime: targetTimeFormatted,
+          );
+        }
       }
     });
   }
 
-  void _cancelDelayedRecording() {
+  Future<void> _cancelDelayedRecording() async {
     _delayCountdownTimer?.cancel();
     setState(() {
       _isDelayedStartActive = false;
+      _targetDelayedStartTime = null;
       _remainingDelaySeconds = 0;
     });
+    if (!kIsWeb) {
+      await WakelockPlus.disable();
+    }
+    await _notificationService.cancelRecordingNotification();
   }
 
-  void _startImmediatelyFromDelayed() {
+  Future<void> _startImmediatelyFromDelayed() async {
     _delayCountdownTimer?.cancel();
     setState(() {
       _isDelayedStartActive = false;
+      _targetDelayedStartTime = null;
       _remainingDelaySeconds = 0;
     });
-    _toggleSleepRecording();
+    await _toggleSleepRecording();
   }
 
   void _showDelayPickerModal() {
@@ -800,6 +841,7 @@ class _HomeScreenState extends State<HomeScreen> {
       final progress = totalSec > 0 ? (1.0 - (_remainingDelaySeconds / totalSec)).clamp(0.0, 1.0) : 0.0;
       final mins = _remainingDelaySeconds ~/ 60;
       final secs = (_remainingDelaySeconds % 60).toString().padLeft(2, '0');
+      final targetFormatted = _targetDelayedStartTime != null ? DateFormat('HH:mm').format(_targetDelayedStartTime!) : '';
 
       return Container(
         width: double.infinity,
@@ -830,7 +872,9 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             const SizedBox(height: 6),
             Text(
-              'Aufnahme startet automatisch in $mins:$secs Min',
+              targetFormatted.isNotEmpty
+                  ? 'Startet um $targetFormatted Uhr (in $mins:$secs Min)'
+                  : 'Aufnahme startet automatisch in $mins:$secs Min',
               style: const TextStyle(color: Color(0xFFE0F2FE), fontSize: 15, fontWeight: FontWeight.w600),
             ),
             const SizedBox(height: 16),

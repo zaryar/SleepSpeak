@@ -62,8 +62,9 @@ class GeminiAudioService {
       );
     }
 
+    String apiKey = '';
     try {
-      final apiKey = await getApiKey();
+      apiKey = await getApiKey();
       if (apiKey.isEmpty) {
         return const GeminiAudioClassificationResult(
           category: EventCategory.general,
