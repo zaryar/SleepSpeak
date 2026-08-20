@@ -178,60 +178,98 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
     final controller = TextEditingController(text: currentKey);
 
     if (!mounted) return;
+    bool obscureKey = true;
 
     await showDialog(
       context: context,
       builder: (ctx) {
-        return AlertDialog(
-          backgroundColor: AppTheme.surface,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-          title: const Row(
-            children: [
-              Icon(Icons.key, color: Color(0xFFFBBF24)),
-              SizedBox(width: 10),
-              Text('Google Gemini API-Key', style: TextStyle(fontSize: 18)),
-            ],
-          ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                'Dein 100 % kostenloser Google AI Studio Schlüssel für die Gemini 1.5 Flash Audio-Analyse.',
-                style: TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              backgroundColor: AppTheme.surface,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+              title: const Row(
+                children: [
+                  Icon(Icons.shield_outlined, color: Color(0xFF10B981)),
+                  SizedBox(width: 10),
+                  Text('Google Gemini API-Key', style: TextStyle(fontSize: 18)),
+                ],
               ),
-              const SizedBox(height: 16),
-              TextField(
-                controller: controller,
-                decoration: InputDecoration(
-                  labelText: 'API-Key',
-                  hintText: 'AQ.Ab8RN...',
-                  filled: true,
-                  fillColor: AppTheme.surfaceLight,
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Dein persönlicher kostenloser Google AI Studio API-Key für die multimodale Audio-Analyse.',
+                    style: TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+                  ),
+                  const SizedBox(height: 12),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF10B981).withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: const Color(0xFF10B981).withValues(alpha: 0.4)),
+                    ),
+                    child: const Row(
+                      children: [
+                        Icon(Icons.lock_outline, size: 14, color: Color(0xFF34D399)),
+                        SizedBox(width: 6),
+                        Expanded(
+                          child: Text(
+                            '100% lokal & privat auf deinem Smartphone gesichert.',
+                            style: TextStyle(fontSize: 11, color: Color(0xFF34D399), fontWeight: FontWeight.bold),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: controller,
+                    obscureText: obscureKey,
+                    decoration: InputDecoration(
+                      labelText: 'API-Key',
+                      hintText: 'Hier API-Key einfügen...',
+                      filled: true,
+                      fillColor: AppTheme.surfaceLight,
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                      suffixIcon: IconButton(
+                        icon: Icon(obscureKey ? Icons.visibility_off : Icons.visibility, color: Colors.white70, size: 20),
+                        onPressed: () {
+                          setDialogState(() {
+                            obscureKey = !obscureKey;
+                          });
+                        },
+                      ),
+                    ),
+                    style: const TextStyle(fontSize: 13),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('Abbrechen'),
                 ),
-                style: const TextStyle(fontSize: 13),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('Abbrechen'),
-            ),
-            ElevatedButton(
-              onPressed: () async {
-                await geminiService.saveApiKey(controller.text);
-                if (ctx.mounted) Navigator.pop(ctx);
-                if (mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('✅ Gemini API-Key gespeichert!')),
-                  );
-                }
-              },
-              child: const Text('Speichern'),
-            ),
-          ],
+                ElevatedButton(
+                  onPressed: () async {
+                    await geminiService.saveApiKey(controller.text);
+                    if (ctx.mounted) Navigator.pop(ctx);
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('✅ Gemini API-Key lokal & sicher gespeichert!'),
+                          backgroundColor: Color(0xFF10B981),
+                        ),
+                      );
+                    }
+                  },
+                  child: const Text('Speichern'),
+                ),
+              ],
+            );
+          },
         );
       },
     );
