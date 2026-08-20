@@ -13,15 +13,24 @@ Teste die Schlafanalyse, den interaktiven Wellenform-Scrubber und den Schwellenw
 
 ## ✨ Features
 
-- **🎙️ Overnight Sleep Recording:** Efficient 16kHz mono WAV recording designed for all-night battery efficiency.
-- **📊 Real-time & Post-hoc Noise Detection:** Identifies noise events based on configurable dB thresholds (e.g. -38 dB) and groups nearby audio spikes.
-- **📈 Interactive Waveform & Timeline:** Interactive audio scrubbing with timestamp markers for all detected events.
-- **🛡️ 100% Offline & Local-First:** All audio recordings and metadata stay entirely on the device. Zero network requests, zero telemetry, zero cloud storage.
-- **⚡ Android Doze-Mode & Crash Resiliency:** 
-  - Periodic background flush (every 30s) prevents data loss.
-  - Emergency auto-save when battery drops below 5%.
-  - Post-recording WAV analyzer reconstructs amplitude histories even if Doze mode paused background sampling.
-- **🧹 Automatic Retention Management:** Automatically cleans up unstarred recordings older than 7 days to preserve storage.
+- **🎙️ Overnight Sleep Recording:** Efficient 16kHz mono WAV recording designed for all-night battery efficiency and Android 14+ Doze Mode compatibility.
+- **⏰ Startverzögerung (Einschlaf-Timer):** Einstellbare Einschlaf-Verzögerung von 1 bis 30 Minuten (mit 10 Min Standard) für geräuschloses Aktivieren der Aufnahme beim Einschlafen.
+- **🤖 KI-Geräuscherkennung & Dynamische Emojis:** Multimodale Audio-Analyse mit Google Gemini:
+  - Differenziert **Schlafreden (🗣️)**, **Schnarchen (😴)**, **Bettbewegungen (🛏️)**, **Verkehr/Autos (🚗)**, **Haushaltsgeräusche (🚪)**, **Husten/Niesen (🤧)** und **Haustiere (🐾)**.
+  - Deutsche Transkription von gesprochenen Wörtern („...“) und Kontext-Erklärung („✨ Deutliches Flüstern beim Aufwachen“).
+- **⚡ Highlights Auto-Skip Player:** Spielt alle erkannten Geräusche nahtlos nacheinander ab – ohne stundenlange Stille – wahlweise mit 1.0x, 1.25x, 1.5x oder 2.0x Geschwindigkeit.
+- **🏷️ Clip-Tagging & 🛡️ 7-Tage-Löschschutz:**
+  - Markiere Clips mit Sternchen oder Tags (`⭐ Favorit`, `🤣 Lustig`, `🔒 Behalten`, `👻 Gruselig`, `💬 Schlafreden`).
+  - Getaggte und favorisierte Clips werden dauerhaft vor der automatischen 7-Tage-Bereinigung geschützt.
+- **🎛️ Smarte Grundrauschen-Kalibrierung:**
+  - 1-Click **„🪄 Auto-Filter (+1 dB)“** oder **„🎯 Hier messen (+1 dB)“** für stumme Nächte ohne Hintergrundrauschen.
+  - Empfindlichkeitsregler erweitert bis **-75 dB**.
+- **📤 1-Click WhatsApp-Export:** Schneidet und exportiert einzelne erkannte Audio-Clips direkt an Freunde oder Gruppen.
+- **📊 Interaktive Wellenform & Timeline:** Flüssiges Audio-Scrubbing mit direkten Sprungmarken für jedes Geräusch.
+- **🛡️ 100% Offline & Local-First:** Alle Audioaufnahmen und Metadaten bleiben standardmäßig vollständig auf dem Gerät.
+- **⚡ Android Doze-Mode & Crash-Schutz:**
+  - Periodisches Auto-Flushing auf die Festplatte alle 30 Sekunden.
+  - Notfall-Autosave bei kritischem Akkustand unter 5%.
 
 ---
 
@@ -30,26 +39,21 @@ Teste die Schlafanalyse, den interaktiven Wellenform-Scrubber und den Schwellenw
 - **Framework:** Flutter (Dart 3+)
 - **Audio Recording:** `record`
 - **Audio Playback:** `just_audio`
+- **AI Classification:** Google Gemini Multimodal Audio API (`gemini-3-flash-preview` / `gemini-3.5-flash-lite`)
 - **Background Execution:** `wakelock_plus`, `flutter_local_notifications`
 - **System Monitoring:** `battery_plus`, `permission_handler`
-- **Storage:** `path_provider`, `shared_preferences`, `intl`
+- **Storage & Sharing:** `path_provider`, `shared_preferences`, `share_plus`, `intl`
 
 ---
 
 ## 🚀 Getting Started
 
-### Prerequisites
-
-- [Flutter SDK](https://docs.flutter.dev/get-started/install) (3.22+ recommended)
-- Android Studio / VS Code with Flutter extension
-- Android device or emulator with microphone support
-
 ### Installation & Run
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/<your-username>/sleep-recorder.git
-   cd sleep-recorder
+   git clone https://github.com/zaryar/SleepSpeak.git
+   cd SleepSpeak
    ```
 
 2. **Install dependencies:**
@@ -57,14 +61,14 @@ Teste die Schlafanalyse, den interaktiven Wellenform-Scrubber und den Schwellenw
    flutter pub get
    ```
 
-3. **Run the app:**
-   ```bash
-   flutter run
-   ```
-
-4. **Run tests:**
+3. **Run tests:**
    ```bash
    flutter test
+   ```
+
+4. **Build Release APK:**
+   ```bash
+   flutter build apk --release
    ```
 
 ---
