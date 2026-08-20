@@ -203,7 +203,7 @@ class DetectedEvent {
 
   String formatClockTime(DateTime sessionStartTime) {
     final eventTime = sessionStartTime.add(startOffset);
-    final hour = eventTime.hour;
+    final hour = eventTime.hour.toString().padLeft(2, '0');
     final minute = eventTime.minute.toString().padLeft(2, '0');
     final period = formatPeriod(sessionStartTime);
     return '$hour:$minute Uhr ($period)';
