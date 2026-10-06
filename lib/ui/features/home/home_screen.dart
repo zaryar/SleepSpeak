@@ -1829,7 +1829,7 @@ class _HomeScreenState extends State<HomeScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  '🌐 Web-Vorschau / Demo',
+                  'Web-Vorschau (Eingeschränkter Testbetrieb)',
                   style: TextStyle(
                     fontWeight: FontWeight.bold,
                     fontSize: 14,
@@ -1838,7 +1838,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
                 SizedBox(height: 4),
                 Text(
-                  'So sieht die App ungefähr auf dem Handy aus! Du kannst die Funktionen, die Schlafanalyse und den Mikrofontest hier kurz ausprobieren – im Web-Browser ist das Ganze natürlich eingeschränkt und nicht so zuverlässig wie die echte App. Für die echte Nachtaufnahme mit Akku-Schutz lade dir einfach die fertige Android-APK auf GitHub herunter.',
+                  'Diese Web-Version dient ausschließlich Demonstrationszwecken. Im Web-Browser sind nicht alle Funktionen getestet und Audioaufnahmen funktionieren technisch bedingt nicht zuverlässig. Die App ist für Android optimiert (kontinuierliche Nachtaufnahme, Doze-Mode und Akku-Schutz). Für den regulären Einsatz bitte die native Android-App verwenden.',
                   style: TextStyle(
                     fontSize: 12,
                     color: AppTheme.textSecondary,

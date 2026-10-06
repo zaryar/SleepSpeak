@@ -2,6 +2,9 @@
 
 Lokaler Audio-Recorder für Schlafreden und nächtliche Geräusche, entwickelt mit Flutter. Die App nimmt nachts Audio auf, erkennt Geräuschspitzen (Schlafreden, Schnarchen, Bewegungen) und ermöglicht das Durchhören der Segmente über eine interaktive Wellenform.
 
+> [!WARNING]
+> **Hinweis zur Web-Version:** Die Web-Vorschau ([https://zaryar.github.io/SleepSpeak/](https://zaryar.github.io/SleepSpeak/)) dient ausschließlich zu Test- und Demonstrationszwecken. Im Web-Browser sind nicht alle Funktionen getestet und Audioaufnahmen funktionieren technisch bedingt nicht zuverlässig. Die Anwendung ist für Android optimiert und funktioniert am besten als native Android-App.
+
 ---
 
 ## Screenshots

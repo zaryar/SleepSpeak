@@ -41,6 +41,8 @@ class GeminiAudioService {
   static const String _prefGeminiApiKey = 'gemini_api_key';
   static const String _prefWhisperModel = 'oracle_whisper_model';
   static const String _envApiKey = String.fromEnvironment('GEMINI_API_KEY', defaultValue: '');
+  static const String _envOracleUrl = String.fromEnvironment('ORACLE_SERVER_URL', defaultValue: '');
+  static const String _envOracleApiKey = String.fromEnvironment('ORACLE_API_KEY', defaultValue: '');
 
   static const String defaultOracleUrl = '';
   static const String defaultOracleApiKey = '';
@@ -50,8 +52,14 @@ class GeminiAudioService {
 
   Future<AiProvider> getProvider() async {
     final prefs = await SharedPreferences.getInstance();
-    final mode = prefs.getString(_prefProvider) ?? 'gemini';
-    return mode == 'oracle' ? AiProvider.oracle : AiProvider.gemini;
+    final mode = prefs.getString(_prefProvider);
+    if (mode != null) {
+      return mode == 'oracle' ? AiProvider.oracle : AiProvider.gemini;
+    }
+    if (_envOracleApiKey.isNotEmpty && _envOracleUrl.isNotEmpty) {
+      return AiProvider.oracle;
+    }
+    return AiProvider.gemini;
   }
 
   Future<void> saveProvider(AiProvider provider) async {
@@ -61,8 +69,14 @@ class GeminiAudioService {
 
   Future<String> getOracleUrl() async {
     final prefs = await SharedPreferences.getInstance();
-    String? stored = prefs.getString(_prefOracleUrl);
-    var url = (stored ?? defaultOracleUrl).trim();
+    final stored = prefs.getString(_prefOracleUrl);
+    String base = defaultOracleUrl;
+    if (stored != null && stored.trim().isNotEmpty) {
+      base = stored;
+    } else if (_envOracleUrl.isNotEmpty) {
+      base = _envOracleUrl;
+    }
+    var url = base.trim();
     while (url.endsWith('/')) {
       url = url.substring(0, url.length - 1);
     }
@@ -80,7 +94,22 @@ class GeminiAudioService {
 
   Future<String> getOracleApiKey() async {
     final prefs = await SharedPreferences.getInstance();
-    return prefs.getString(_prefOracleApiKey) ?? defaultOracleApiKey;
+    final stored = prefs.getString(_prefOracleApiKey);
+    if (stored != null && stored.trim().isNotEmpty) {
+      if (stored == 'sleepspeak_oracle_secret_token_2026') {
+        if (_envOracleApiKey.isNotEmpty) {
+          await prefs.setString(_prefOracleApiKey, _envOracleApiKey);
+          return _envOracleApiKey;
+        }
+        await prefs.remove(_prefOracleApiKey);
+      } else {
+        return stored.trim();
+      }
+    }
+    if (_envOracleApiKey.isNotEmpty) {
+      return _envOracleApiKey;
+    }
+    return defaultOracleApiKey;
   }
 
   Future<void> saveOracleApiKey(String key) async {
