@@ -192,6 +192,7 @@ void main() {
         dynamicEmoji: '🗣️',
         tags: ['⭐ Favorit', '🤣 Lustig'],
         isFavorite: true,
+        standaloneAudioPath: '/data/user/0/com.sleeprecorder/sleep_favorites/fav_123.m4a',
       );
 
       final json = event.toJson();
@@ -203,6 +204,7 @@ void main() {
       expect(json['dynamicEmoji'], equals('🗣️'));
       expect(json['tags'], equals(['⭐ Favorit', '🤣 Lustig']));
       expect(json['isFavorite'], isTrue);
+      expect(json['standaloneAudioPath'], equals('/data/user/0/com.sleeprecorder/sleep_favorites/fav_123.m4a'));
 
       final restored = DetectedEvent.fromJson(json);
       expect(restored.isSpeech, isTrue);
@@ -215,6 +217,7 @@ void main() {
       expect(restored.tags, equals(['⭐ Favorit', '🤣 Lustig']));
       expect(restored.isFavorite, isTrue);
       expect(restored.isProtected, isTrue);
+      expect(restored.standaloneAudioPath, equals('/data/user/0/com.sleeprecorder/sleep_favorites/fav_123.m4a'));
     });
 
     test('DetectedEvent fallback on unknown category safely maps to general', () {
@@ -416,6 +419,18 @@ void main() {
 
       expect(result, isNotNull);
       expect(result.confidence, isNotNull);
+    });
+
+    test('GeminiAudioService normalizes server URL and trims trailing slashes', () async {
+      SharedPreferences.setMockInitialValues({});
+      final service = GeminiAudioService();
+
+      // Default URL should be empty string
+      expect(await service.getOracleUrl(), equals(''));
+
+      // Test trailing slash removal on save
+      await service.saveOracleUrl('https://custom-server.local:8088///');
+      expect(await service.getOracleUrl(), equals('https://custom-server.local:8088'));
     });
   });
 }

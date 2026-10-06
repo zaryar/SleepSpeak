@@ -82,14 +82,19 @@ class RecordingSession {
             [],
       );
 
-  // Calculates noise events dynamically based on a decibel threshold
+  // Calculates noise events dynamically based on a decibel threshold with 350ms hangover smoothing
   List<DetectedEvent> recalculateEvents(double thresholdDb) {
     final List<DetectedEvent> events = [];
     if (amplitudeHistory.isEmpty || duration.inMilliseconds == 0) return events;
 
-    final msPerSample = duration.inMilliseconds / amplitudeHistory.length;
+    final double msPerSample = duration.inMilliseconds / amplitudeHistory.length;
+    const int hangoverMs = 350; // Tolerance to prevent chopping speech/breaths
+    final int maxSilenceSamples = (hangoverMs / msPerSample).ceil().clamp(1, 10);
+
     bool inPeak = false;
     int peakStartIdx = 0;
+    int lastActiveIdx = 0;
+    int silenceSamples = 0;
     double maxDb = -100.0;
     double sumDb = 0.0;
     int count = 0;
@@ -100,32 +105,38 @@ class RecordingSession {
         if (!inPeak) {
           inPeak = true;
           peakStartIdx = i;
+          lastActiveIdx = i;
+          silenceSamples = 0;
           maxDb = db;
           sumDb = db;
           count = 1;
         } else {
+          lastActiveIdx = i;
+          silenceSamples = 0;
           if (db > maxDb) maxDb = db;
           sumDb += db;
           count++;
         }
       } else {
         if (inPeak) {
-          inPeak = false;
-          final startMs = (peakStartIdx * msPerSample).round();
-          final endMs = (i * msPerSample).round();
-          final peakDuration = Duration(milliseconds: endMs - startMs);
+          silenceSamples++;
+          if (silenceSamples > maxSilenceSamples) {
+            inPeak = false;
+            final startMs = (peakStartIdx * msPerSample).round();
+            final endMs = ((lastActiveIdx + 1) * msPerSample).round();
+            final peakDuration = Duration(milliseconds: endMs - startMs);
 
-          // Only treat as event if duration is at least 300ms
-          if (peakDuration.inMilliseconds >= 300) {
-            events.add(
-              DetectedEvent(
-                id: 'evt_${startMs}_$maxDb',
-                startOffset: Duration(milliseconds: startMs),
-                duration: peakDuration,
-                maxDb: maxDb,
-                avgDb: sumDb / count,
-              ),
-            );
+            if (peakDuration.inMilliseconds >= 300) {
+              events.add(
+                DetectedEvent(
+                  id: 'evt_${startMs}_$maxDb',
+                  startOffset: Duration(milliseconds: startMs),
+                  duration: peakDuration,
+                  maxDb: maxDb,
+                  avgDb: sumDb / (count > 0 ? count : 1),
+                ),
+              );
+            }
           }
         }
       }
@@ -133,19 +144,22 @@ class RecordingSession {
 
     if (inPeak) {
       final startMs = (peakStartIdx * msPerSample).round();
-      final endMs = (amplitudeHistory.length * msPerSample).round();
-      events.add(
-        DetectedEvent(
-          id: 'evt_${startMs}_$maxDb',
-          startOffset: Duration(milliseconds: startMs),
-          duration: Duration(milliseconds: endMs - startMs),
-          maxDb: maxDb,
-          avgDb: sumDb / count,
-        ),
-      );
+      final endMs = ((lastActiveIdx + 1) * msPerSample).round();
+      final peakDuration = Duration(milliseconds: endMs - startMs);
+      if (peakDuration.inMilliseconds >= 300) {
+        events.add(
+          DetectedEvent(
+            id: 'evt_${startMs}_$maxDb',
+            startOffset: Duration(milliseconds: startMs),
+            duration: peakDuration,
+            maxDb: maxDb,
+            avgDb: sumDb / (count > 0 ? count : 1),
+          ),
+        );
+      }
     }
 
-    // Merge events that occur close to each other (gap <= 3s, max combined duration <= 12s)
+    // Merge events that occur close to each other (gap <= 2.5s, max combined duration <= 12s)
     final List<DetectedEvent> mergedEvents = [];
     if (events.isNotEmpty) {
       DetectedEvent currentMerged = events.first;
@@ -157,7 +171,7 @@ class RecordingSession {
         final newDurationMs = (nextEvent.startOffset.inMilliseconds + nextEvent.duration.inMilliseconds) -
             currentMerged.startOffset.inMilliseconds;
 
-        if (gapMs <= 3000 && newDurationMs <= 12000) {
+        if (gapMs <= 2500 && newDurationMs <= 12000) {
           // Merge with currentMerged
           final newDuration = Duration(milliseconds: newDurationMs);
           final newMaxDb = nextEvent.maxDb > currentMerged.maxDb ? nextEvent.maxDb : currentMerged.maxDb;
@@ -182,6 +196,13 @@ class RecordingSession {
     }
 
     return mergedEvents;
+  }
+
+  /// Returns the recommended adaptive noise threshold tailored to this session's room:
+  /// 25th percentile of amplitude history + 2.0 dB, clamped to a safe range of [-52.0, -28.0] dB.
+  double getAdaptiveThresholdDb() {
+    final noiseFloor = estimateNoiseFloorDb();
+    return (noiseFloor + 2.0).clamp(-52.0, -28.0);
   }
 
   /// Automatically estimates the background noise floor (Grundrauschen) of the room

@@ -1,10 +1,12 @@
 package com.sleeprecorder.sleep_recorder
 
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.media.MediaMuxer
+import android.util.Log
 import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -39,20 +41,104 @@ class MainActivity : FlutterActivity() {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, SERVICE_CHANNEL).setMethodCallHandler { call, result ->
             when (call.method) {
                 "startService" -> {
-                    val title = call.argument<String>("title") ?: "🌙 Schlafaufnahme läuft..."
-                    val intent = Intent(this, SleepRecorderForegroundService::class.java).apply {
-                        action = SleepRecorderForegroundService.ACTION_START
-                        putExtra(SleepRecorderForegroundService.EXTRA_TITLE, title)
+                    try {
+                        val hasMic = ContextCompat.checkSelfPermission(
+                            this,
+                            android.Manifest.permission.RECORD_AUDIO
+                        ) == PackageManager.PERMISSION_GRANTED
+
+                        if (!hasMic) {
+                            Log.e("MainActivity", "startService called without RECORD_AUDIO permission")
+                            result.error("PERMISSION_DENIED", "RECORD_AUDIO permission is required", null)
+                            return@setMethodCallHandler
+                        }
+
+                        val title = call.argument<String>("title")
+                        val content = call.argument<String>("content")
+                        val isCountdown = call.argument<Boolean>("isCountdown") ?: false
+                        val targetEpochMs = call.argument<Number>("targetEpochMs")?.toLong() ?: 0L
+
+                        val intent = Intent(this, SleepRecorderForegroundService::class.java).apply {
+                            action = SleepRecorderForegroundService.ACTION_START
+                            putExtra(SleepRecorderForegroundService.EXTRA_TITLE, title)
+                            putExtra(SleepRecorderForegroundService.EXTRA_CONTENT, content)
+                            putExtra(SleepRecorderForegroundService.EXTRA_IS_COUNTDOWN, isCountdown)
+                            putExtra(SleepRecorderForegroundService.EXTRA_TARGET_EPOCH_MS, targetEpochMs)
+                        }
+                        ContextCompat.startForegroundService(this, intent)
+                        result.success(true)
+                    } catch (e: Exception) {
+                        Log.e("MainActivity", "startForegroundService failed: ${e.message}", e)
+                        result.error("SERVICE_ERROR", e.message, null)
                     }
-                    ContextCompat.startForegroundService(this, intent)
-                    result.success(true)
                 }
                 "stopService" -> {
-                    val intent = Intent(this, SleepRecorderForegroundService::class.java).apply {
-                        action = SleepRecorderForegroundService.ACTION_STOP
+                    try {
+                        val intent = Intent(this, SleepRecorderForegroundService::class.java).apply {
+                            action = SleepRecorderForegroundService.ACTION_STOP
+                        }
+                        startService(intent)
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.error("STOP_SERVICE_FAILED", e.message, null)
                     }
-                    startService(intent)
-                    result.success(true)
+                }
+                "startAiService" -> {
+                    try {
+                        val title = call.argument<String>("title") ?: "🤖 KI-Geräuschanalyse läuft"
+                        val content = call.argument<String>("content") ?: "Initialisiere..."
+                        val progress = call.argument<Number>("progress")?.toInt() ?: 0
+                        val maxProgress = call.argument<Number>("maxProgress")?.toInt() ?: 100
+
+                        val intent = Intent(this, SleepRecorderForegroundService::class.java).apply {
+                            action = SleepRecorderForegroundService.ACTION_START_AI
+                            putExtra(SleepRecorderForegroundService.EXTRA_AI_TITLE, title)
+                            putExtra(SleepRecorderForegroundService.EXTRA_AI_CONTENT, content)
+                            putExtra(SleepRecorderForegroundService.EXTRA_AI_PROGRESS, progress)
+                            putExtra(SleepRecorderForegroundService.EXTRA_AI_MAX_PROGRESS, maxProgress)
+                        }
+                        ContextCompat.startForegroundService(this, intent)
+                        result.success(true)
+                    } catch (e: Exception) {
+                        Log.e("MainActivity", "startAiService failed: ${e.message}", e)
+                        result.error("START_AI_SERVICE_FAILED", e.message, null)
+                    }
+                }
+                "updateAiProgress" -> {
+                    try {
+                        val title = call.argument<String>("title") ?: "🤖 KI-Geräuschanalyse läuft"
+                        val content = call.argument<String>("content") ?: ""
+                        val progress = call.argument<Number>("progress")?.toInt() ?: 0
+                        val maxProgress = call.argument<Number>("maxProgress")?.toInt() ?: 100
+
+                        val intent = Intent(this, SleepRecorderForegroundService::class.java).apply {
+                            action = SleepRecorderForegroundService.ACTION_UPDATE_AI
+                            putExtra(SleepRecorderForegroundService.EXTRA_AI_TITLE, title)
+                            putExtra(SleepRecorderForegroundService.EXTRA_AI_CONTENT, content)
+                            putExtra(SleepRecorderForegroundService.EXTRA_AI_PROGRESS, progress)
+                            putExtra(SleepRecorderForegroundService.EXTRA_AI_MAX_PROGRESS, maxProgress)
+                        }
+                        startService(intent)
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.error("UPDATE_AI_PROGRESS_FAILED", e.message, null)
+                    }
+                }
+                "stopAiService" -> {
+                    try {
+                        val completionTitle = call.argument<String>("completionTitle")
+                        val completionContent = call.argument<String>("completionContent")
+
+                        val intent = Intent(this, SleepRecorderForegroundService::class.java).apply {
+                            action = SleepRecorderForegroundService.ACTION_STOP_AI
+                            putExtra(SleepRecorderForegroundService.EXTRA_AI_COMPLETION_TITLE, completionTitle)
+                            putExtra(SleepRecorderForegroundService.EXTRA_AI_COMPLETION_CONTENT, completionContent)
+                        }
+                        startService(intent)
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.error("STOP_AI_SERVICE_FAILED", e.message, null)
+                    }
                 }
                 else -> {
                     result.notImplemented()
@@ -123,11 +209,50 @@ class MainActivity : FlutterActivity() {
 
         val bufferInfo = MediaCodec.BufferInfo()
         val fis = FileInputStream(inputFile)
+        val pcmData = ByteArray(totalBytesToRead.toInt())
+        var totalRead = 0
 
         try {
             fis.skip(startByteOffset)
-            val buffer = ByteArray(4096)
-            var bytesReadTotal = 0L
+            while (totalRead < pcmData.size) {
+                val r = fis.read(pcmData, totalRead, pcmData.size - totalRead)
+                if (r <= 0) break
+                totalRead += r
+            }
+        } finally {
+            try { fis.close() } catch (_: Exception) {}
+        }
+
+        // Automatic Peak Normalization & Gain Boost for quiet sounds (whispers, soft movements)
+        var maxAbs = 0
+        var i = 0
+        while (i + 1 < totalRead) {
+            val sample = (pcmData[i].toInt() and 0xFF) or (pcmData[i + 1].toInt() shl 8)
+            val shortVal = sample.toShort()
+            val absVal = Math.abs(shortVal.toInt())
+            if (absVal > maxAbs) maxAbs = absVal
+            i += 2
+        }
+
+        // If audio is quiet (peak < 22000, i.e. below -3.5 dBFS), boost up to 32x (approx +30 dB)
+        if (maxAbs in 1..21999) {
+            val targetPeak = 28000.0f
+            val gain = (targetPeak / maxAbs).coerceIn(1.0f, 32.0f)
+            if (gain > 1.05f) {
+                var j = 0
+                while (j + 1 < totalRead) {
+                    val raw = (pcmData[j].toInt() and 0xFF) or (pcmData[j + 1].toInt() shl 8)
+                    val shortVal = raw.toShort().toFloat() * gain
+                    val clamped = shortVal.coerceIn(-32768f, 32767f).toInt().toShort()
+                    pcmData[j] = (clamped.toInt() and 0xFF).toByte()
+                    pcmData[j + 1] = ((clamped.toInt() shr 8) and 0xFF).toByte()
+                    j += 2
+                }
+            }
+        }
+
+        try {
+            var pcmOffset = 0
             var isEos = false
             var presentationTimeUs = 0L
 
@@ -138,16 +263,14 @@ class MainActivity : FlutterActivity() {
                         val inputBuffer = codec.getInputBuffer(inputBufferIndex) ?: continue
                         inputBuffer.clear()
 
-                        val remaining = (totalBytesToRead - bytesReadTotal).coerceAtLeast(0)
-                        val toRead = buffer.size.toLong().coerceAtMost(remaining).toInt()
+                        val remaining = totalRead - pcmOffset
+                        val toWrite = 4096.coerceAtMost(remaining)
 
-                        val bytesRead = if (toRead > 0) fis.read(buffer, 0, toRead) else -1
-
-                        if (bytesRead > 0) {
-                            inputBuffer.put(buffer, 0, bytesRead)
-                            presentationTimeUs = (bytesReadTotal * 1000000L) / bytesPerSecond
-                            codec.queueInputBuffer(inputBufferIndex, 0, bytesRead, presentationTimeUs, 0)
-                            bytesReadTotal += bytesRead
+                        if (toWrite > 0) {
+                            inputBuffer.put(pcmData, pcmOffset, toWrite)
+                            presentationTimeUs = (pcmOffset.toLong() * 1000000L) / bytesPerSecond
+                            codec.queueInputBuffer(inputBufferIndex, 0, toWrite, presentationTimeUs, 0)
+                            pcmOffset += toWrite
                         } else {
                             codec.queueInputBuffer(inputBufferIndex, 0, 0, presentationTimeUs, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                             isEos = true
@@ -179,7 +302,6 @@ class MainActivity : FlutterActivity() {
                 }
             }
         } finally {
-            try { fis.close() } catch (_: Exception) {}
             try { codec.stop() } catch (_: Exception) {}
             try { codec.release() } catch (_: Exception) {}
             try {

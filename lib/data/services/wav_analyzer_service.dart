@@ -141,7 +141,7 @@ Map<String, dynamic> _analyzeWavInIsolate(Map<String, dynamic> params) {
   try {
     raf.setPositionSync(44);
 
-    const int bytesPerChunk = 6400; // 200ms of 16kHz 16-bit mono
+    const int bytesPerChunk = 3200; // 100ms of 16kHz 16-bit mono
     final int dataSize = fileSize - 44;
     final int totalChunks = dataSize ~/ bytesPerChunk;
 
@@ -171,12 +171,16 @@ Map<String, dynamic> _analyzeWavInIsolate(Map<String, dynamic> params) {
     raf.closeSync();
   }
 
-  // 1. Calculate events at FULL 200ms precision (Exact dynamic duration: 1.2s, 3.4s, 5.0s, etc.)
+  // 1. Calculate events with 100ms precision and 350ms acoustic hangover (release) time
   final List<Map<String, dynamic>> rawEvents = [];
-  const int msPerSample = 200;
+  const int msPerSample = 100;
+  const int hangoverMs = 350; // Silence tolerance to prevent choppy cuts between syllables/breaths
+  final int maxSilenceSamples = (hangoverMs / msPerSample).ceil(); // ~4 samples (400ms)
 
   bool inPeak = false;
   int peakStartIdx = 0;
+  int lastActiveIdx = 0;
+  int silenceSamples = 0;
   double maxDb = -100.0;
   double sumDb = 0.0;
   int count = 0;
@@ -187,29 +191,38 @@ Map<String, dynamic> _analyzeWavInIsolate(Map<String, dynamic> params) {
       if (!inPeak) {
         inPeak = true;
         peakStartIdx = i;
+        lastActiveIdx = i;
+        silenceSamples = 0;
         maxDb = db;
         sumDb = db;
         count = 1;
       } else {
+        lastActiveIdx = i;
+        silenceSamples = 0;
         if (db > maxDb) maxDb = db;
         sumDb += db;
         count++;
       }
     } else {
       if (inPeak) {
-        inPeak = false;
-        final startMs = peakStartIdx * msPerSample;
-        final endMs = i * msPerSample;
-        final durationMs = endMs - startMs;
+        silenceSamples++;
+        if (silenceSamples > maxSilenceSamples) {
+          // Event genuinely concluded
+          inPeak = false;
+          final startMs = peakStartIdx * msPerSample;
+          final endMs = (lastActiveIdx + 1) * msPerSample;
+          final durationMs = endMs - startMs;
 
-        if (durationMs >= 300) {
-          rawEvents.add({
-            'id': 'evt_${startMs}_${maxDb.toStringAsFixed(1)}',
-            'startOffsetMs': startMs,
-            'durationMs': durationMs,
-            'maxDb': maxDb,
-            'avgDb': sumDb / count,
-          });
+          // Only keep events that last at least 300ms
+          if (durationMs >= 300) {
+            rawEvents.add({
+              'id': 'evt_${startMs}_${maxDb.toStringAsFixed(1)}',
+              'startOffsetMs': startMs,
+              'durationMs': durationMs,
+              'maxDb': maxDb,
+              'avgDb': sumDb / (count > 0 ? count : 1),
+            });
+          }
         }
       }
     }
@@ -217,7 +230,7 @@ Map<String, dynamic> _analyzeWavInIsolate(Map<String, dynamic> params) {
 
   if (inPeak) {
     final startMs = peakStartIdx * msPerSample;
-    final endMs = rawHistory.length * msPerSample;
+    final endMs = (lastActiveIdx + 1) * msPerSample;
     final durationMs = endMs - startMs;
     if (durationMs >= 300) {
       rawEvents.add({
@@ -225,12 +238,12 @@ Map<String, dynamic> _analyzeWavInIsolate(Map<String, dynamic> params) {
         'startOffsetMs': startMs,
         'durationMs': durationMs,
         'maxDb': maxDb,
-        'avgDb': sumDb / count,
+        'avgDb': sumDb / (count > 0 ? count : 1),
       });
     }
   }
 
-  // Merge events that occur close to each other (gap <= 3s, max combined duration <= 12s)
+  // Merge events that occur close to each other (gap <= 2.5s, max combined duration <= 12s)
   final List<Map<String, dynamic>> mergedEvents = [];
   if (rawEvents.isNotEmpty) {
     var currentMerged = Map<String, dynamic>.from(rawEvents.first);
@@ -242,7 +255,7 @@ Map<String, dynamic> _analyzeWavInIsolate(Map<String, dynamic> params) {
       final newDurationMs = ((nextEvent['startOffsetMs'] as int) + (nextEvent['durationMs'] as int)) -
           (currentMerged['startOffsetMs'] as int);
 
-      if (gapMs <= 3000 && newDurationMs <= 12000) {
+      if (gapMs <= 2500 && newDurationMs <= 12000) {
         final nextMax = (nextEvent['maxDb'] as num).toDouble();
         final currMax = (currentMerged['maxDb'] as num).toDouble();
         final newMaxDb = nextMax > currMax ? nextMax : currMax;

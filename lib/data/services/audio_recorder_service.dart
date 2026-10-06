@@ -45,7 +45,7 @@ class AudioRecorderService {
       await _logger.log('Mic permission check: $perm');
       return perm;
     } catch (_) {
-      return true;
+      return false;
     }
   }
 
@@ -130,7 +130,7 @@ class AudioRecorderService {
 
       try {
         await _notificationService.init();
-        await _notificationService.showRecordingNotification(durationText: '00:00:00');
+        await _notificationService.startRecordingNotification();
         await _logger.log('Foreground notification started.');
       } catch (e) {
         await _logger.log('Notification error: $e');
@@ -154,6 +154,17 @@ class AudioRecorderService {
       await _logger.log('AudioRecorder engine started writing.');
     } catch (e) {
       await _logger.log('FATAL: AudioRecorder.start exception: $e');
+      if (!kIsWeb) {
+        try {
+          await _notificationService.cancelRecordingNotification();
+        } catch (_) {}
+        try {
+          await WakelockPlus.disable();
+        } catch (_) {}
+        _batteryService.stopMonitoring();
+      }
+      _amplitudeStreamController?.close();
+      _amplitudeStreamController = null;
       _state = RecordingState.stopped;
       return false;
     }
@@ -162,7 +173,7 @@ class AudioRecorderService {
       _elapsedDuration = Duration(seconds: timer.tick);
       final formattedDuration = _formatDuration(_elapsedDuration);
       if (!kIsWeb) {
-        _notificationService.showRecordingNotification(durationText: formattedDuration);
+        // Notification is handled by native chronometer now, no need to update every second!
       }
 
       if (timer.tick % 30 == 0) {
@@ -250,6 +261,7 @@ class AudioRecorderService {
   void dispose() {
     _recordingTimer?.cancel();
     _amplitudeTimer?.cancel();
+    _amplitudeStreamController?.close();
     _recorder.dispose();
   }
 }

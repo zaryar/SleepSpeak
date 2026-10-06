@@ -9,7 +9,11 @@ class BatteryService {
   void startMonitoring({required Function() onLowBattery}) {
     onLowBatteryWarning = onLowBattery;
     _batteryLevelSub = Stream.periodic(const Duration(minutes: 2)).asyncMap((_) async {
-      return await _battery.batteryLevel;
+      try {
+        return await _battery.batteryLevel;
+      } catch (_) {
+        return 100;
+      }
     }).listen((level) {
       if (level <= 5) {
         onLowBatteryWarning?.call();

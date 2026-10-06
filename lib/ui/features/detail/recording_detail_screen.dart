@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:just_audio/just_audio.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:share_plus/share_plus.dart';
 import '../../../data/repositories/recording_repository.dart';
 import '../../../data/services/audio_trimmer_service.dart';
@@ -28,7 +29,11 @@ class RecordingDetailScreen extends StatefulWidget {
 
 class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
   late AudioPlayer _audioPlayer;
+  late AndroidLoudnessEnhancer _loudnessEnhancer;
+  bool _autoBoostQuietSounds = true;
   late RecordingSession _currentSession;
+  StreamSubscription<Duration>? _positionSub;
+  StreamSubscription<PlayerState>? _playerStateSub;
 
   final AudioTrimmerService _trimmerService = AudioTrimmerService();
   final StorageService _storageService = StorageService();
@@ -65,7 +70,56 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
   bool _isExporting = false;
   Timer? _thresholdDebounceTimer;
 
+  Future<void> _applyEventGain(double maxDb) async {
+    if (!_autoBoostQuietSounds) {
+      try {
+        await _loudnessEnhancer.setEnabled(false);
+      } catch (_) {}
+      return;
+    }
+    try {
+      await _loudnessEnhancer.setEnabled(true);
+      double gainBels = 1.6;
+      if (maxDb <= -45) {
+        gainBels = 2.8; // +28 dB boost for quiet whispers/murmurs at -50 dB
+      } else if (maxDb <= -35) {
+        gainBels = 2.0; // +20 dB boost
+      } else if (maxDb <= -25) {
+        gainBels = 1.2; // +12 dB boost
+      } else {
+        gainBels = 0.5; // +5 dB gentle boost
+      }
+      await _loudnessEnhancer.setTargetGain(gainBels);
+    } catch (_) {}
+  }
+
+  Future<void> _toggleAutoBoost() async {
+    setState(() {
+      _autoBoostQuietSounds = !_autoBoostQuietSounds;
+    });
+    try {
+      await _loudnessEnhancer.setEnabled(_autoBoostQuietSounds);
+      if (_autoBoostQuietSounds) {
+        await _loudnessEnhancer.setTargetGain(1.8);
+      }
+    } catch (_) {}
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(_autoBoostQuietSounds
+              ? '⚡ Auto-Boost aktiv: Leise Geräusche werden automatisch laut abgespielt (+20 dB bis +28 dB)!'
+              : 'Auto-Boost deaktiviert (normale Lautstärke).'),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    }
+  }
+
   Future<void> _runAIAnalysis() async {
+    try {
+      await Permission.notification.request();
+    } catch (_) {}
+
     if (_currentSession.detectedEvents.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Keine Geräusch-Events zum Analysieren vorhanden.')),
@@ -76,6 +130,7 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
     double currentProgress = 0.05;
     String currentStatus = 'Initialisiere KI-Audio-Analyse...';
     StateSetter? dialogSetState;
+    bool isDialogOpen = true;
 
     showDialog(
       context: context,
@@ -125,8 +180,34 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
                       ),
                     ),
                   ),
+                  const SizedBox(height: 12),
+                  const Text(
+                    '💡 Tipp: Du kannst die App verlassen oder das Display sperren – der Fortschritt läuft in der Statusleiste weiter.',
+                    style: TextStyle(fontSize: 11, color: AppTheme.textSecondary),
+                  ),
                 ],
               ),
+              actions: [
+                TextButton.icon(
+                  onPressed: () {
+                    isDialogOpen = false;
+                    dialogSetState = null;
+                    if (dialogCtx.mounted) {
+                      Navigator.of(dialogCtx).pop();
+                    }
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('⚡ Analyse läuft im Hintergrund weiter. Fortschritt siehe Benachrichtigungsleiste.'),
+                          duration: Duration(seconds: 3),
+                        ),
+                      );
+                    }
+                  },
+                  icon: const Icon(Icons.arrow_downward, size: 16),
+                  label: const Text('Im Hintergrund fortsetzen'),
+                ),
+              ],
             );
           },
         );
@@ -139,12 +220,24 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
         onProgress: (ratio, text) {
           currentProgress = ratio;
           currentStatus = text;
-          dialogSetState?.call(() {});
+          if (mounted && isDialogOpen && dialogSetState != null) {
+            try {
+              dialogSetState?.call(() {});
+            } catch (_) {
+              dialogSetState = null;
+            }
+          }
         },
       );
 
       if (mounted) {
-        Navigator.of(context, rootNavigator: true).pop(); // Close dialog
+        if (isDialogOpen) {
+          isDialogOpen = false;
+          dialogSetState = null;
+          if (Navigator.of(context, rootNavigator: true).canPop()) {
+            Navigator.of(context, rootNavigator: true).pop();
+          }
+        }
         setState(() {
           _currentSession = updatedSession;
         });
@@ -164,7 +257,13 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
       }
     } catch (e) {
       if (mounted) {
-        Navigator.of(context, rootNavigator: true).pop();
+        if (isDialogOpen) {
+          isDialogOpen = false;
+          dialogSetState = null;
+          if (Navigator.of(context, rootNavigator: true).canPop()) {
+            Navigator.of(context, rootNavigator: true).pop();
+          }
+        }
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Fehler bei der KI-Analyse: $e')),
         );
@@ -172,80 +271,284 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
     }
   }
 
-  Future<void> _showApiKeyDialog() async {
+  Future<void> _showAiSettingsDialog() async {
     final geminiService = GeminiAudioService();
-    final currentKey = await geminiService.getApiKey();
-    final controller = TextEditingController(text: currentKey);
+    AiProvider selectedProvider = await geminiService.getProvider();
+    String selectedWhisperModel = await geminiService.getWhisperModel();
+    final oracleUrlController = TextEditingController(text: await geminiService.getOracleUrl());
+    final oracleKeyController = TextEditingController(text: await geminiService.getOracleApiKey());
+    final geminiKeyController = TextEditingController(text: await geminiService.getApiKey());
 
     if (!mounted) return;
-    bool obscureKey = true;
+    bool obscureKeys = true;
+    String testStatus = '';
+    Color testStatusColor = AppTheme.textSecondary;
 
     await showDialog(
       context: context,
       builder: (ctx) {
         return StatefulBuilder(
           builder: (dialogCtx, setDialogState) {
+            final isOracle = selectedProvider == AiProvider.oracle;
             return AlertDialog(
               backgroundColor: AppTheme.surface,
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-              title: const Row(
+              title: Row(
                 children: [
-                  Icon(Icons.shield_outlined, color: Color(0xFF10B981)),
-                  SizedBox(width: 10),
-                  Text('Google Gemini API-Key', style: TextStyle(fontSize: 18)),
+                  Icon(
+                    isOracle ? Icons.cloud_done : Icons.auto_awesome,
+                    color: isOracle ? const Color(0xFF10B981) : const Color(0xFFFBBF24),
+                  ),
+                  const SizedBox(width: 10),
+                  const Text('KI-Analyse Einstellungen', style: TextStyle(fontSize: 18)),
                 ],
               ),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'Dein persönlicher kostenloser Google AI Studio API-Key für die multimodale Audio-Analyse.',
-                    style: TextStyle(fontSize: 12, color: AppTheme.textSecondary),
-                  ),
-                  const SizedBox(height: 12),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF10B981).withValues(alpha: 0.12),
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: const Color(0xFF10B981).withValues(alpha: 0.4)),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Wähle deine bevorzugte KI-Engine für die Erkennung von Geräuschen, Schnarchen & Flüstern:',
+                      style: TextStyle(fontSize: 12, color: AppTheme.textSecondary),
                     ),
-                    child: const Row(
-                      children: [
-                        Icon(Icons.lock_outline, size: 14, color: Color(0xFF34D399)),
-                        SizedBox(width: 6),
-                        Expanded(
-                          child: Text(
-                            '100% lokal & privat auf deinem Smartphone gesichert.',
-                            style: TextStyle(fontSize: 11, color: Color(0xFF34D399), fontWeight: FontWeight.bold),
+                    const SizedBox(height: 14),
+
+                    // Provider Switch
+                    Container(
+                      decoration: BoxDecoration(
+                        color: AppTheme.surfaceLight,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: GestureDetector(
+                              onTap: () {
+                                setDialogState(() {
+                                  selectedProvider = AiProvider.oracle;
+                                  testStatus = '';
+                                });
+                              },
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(vertical: 10),
+                                decoration: BoxDecoration(
+                                  color: isOracle ? const Color(0xFF10B981).withValues(alpha: 0.25) : Colors.transparent,
+                                  borderRadius: BorderRadius.circular(12),
+                                  border: isOracle ? Border.all(color: const Color(0xFF10B981)) : null,
+                                ),
+                                child: const Column(
+                                  children: [
+                                    Text('☁️ Eigener Server', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                                    SizedBox(height: 2),
+                                    Text('Whisper-Backend', style: TextStyle(fontSize: 10, color: AppTheme.textSecondary)),
+                                  ],
+                                ),
+                              ),
+                            ),
                           ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  TextField(
-                    controller: controller,
-                    obscureText: obscureKey,
-                    decoration: InputDecoration(
-                      labelText: 'API-Key',
-                      hintText: 'Hier API-Key einfügen...',
-                      filled: true,
-                      fillColor: AppTheme.surfaceLight,
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                      suffixIcon: IconButton(
-                        icon: Icon(obscureKey ? Icons.visibility_off : Icons.visibility, color: Colors.white70, size: 20),
-                        onPressed: () {
-                          setDialogState(() {
-                            obscureKey = !obscureKey;
-                          });
-                        },
+                          Expanded(
+                            child: GestureDetector(
+                              onTap: () {
+                                setDialogState(() {
+                                  selectedProvider = AiProvider.gemini;
+                                  testStatus = '';
+                                });
+                              },
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(vertical: 10),
+                                decoration: BoxDecoration(
+                                  color: !isOracle ? const Color(0xFFFBBF24).withValues(alpha: 0.25) : Colors.transparent,
+                                  borderRadius: BorderRadius.circular(12),
+                                  border: !isOracle ? Border.all(color: const Color(0xFFFBBF24)) : null,
+                                ),
+                                child: const Column(
+                                  children: [
+                                    Text('✨ Google Gemini', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                                    SizedBox(height: 2),
+                                    Text('Cloud (15 RPM)', style: TextStyle(fontSize: 10, color: AppTheme.textSecondary)),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
-                    style: const TextStyle(fontSize: 13),
-                  ),
-                ],
+                    const SizedBox(height: 16),
+
+                    if (isOracle) ...[
+                      const Text(
+                        'Whisper KI-Modell auf Server:',
+                        style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.white),
+                      ),
+                      const SizedBox(height: 8),
+                      Container(
+                        decoration: BoxDecoration(
+                          color: AppTheme.surfaceLight,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: GestureDetector(
+                                onTap: () {
+                                  setDialogState(() {
+                                    selectedWhisperModel = 'base';
+                                  });
+                                },
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
+                                  decoration: BoxDecoration(
+                                    color: selectedWhisperModel == 'base'
+                                        ? const Color(0xFF10B981).withValues(alpha: 0.25)
+                                        : Colors.transparent,
+                                    borderRadius: BorderRadius.circular(12),
+                                    border: selectedWhisperModel == 'base'
+                                        ? Border.all(color: const Color(0xFF10B981))
+                                        : null,
+                                  ),
+                                  child: const Column(
+                                    children: [
+                                      Text('⚡ base (Schnell)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                                      SizedBox(height: 2),
+                                      Text('~0.4s pro Clip', style: TextStyle(fontSize: 10, color: AppTheme.textSecondary)),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
+                            Expanded(
+                              child: GestureDetector(
+                                onTap: () {
+                                  setDialogState(() {
+                                    selectedWhisperModel = 'small';
+                                  });
+                                },
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
+                                  decoration: BoxDecoration(
+                                    color: selectedWhisperModel == 'small'
+                                        ? const Color(0xFF38BDF8).withValues(alpha: 0.25)
+                                        : Colors.transparent,
+                                    borderRadius: BorderRadius.circular(12),
+                                    border: selectedWhisperModel == 'small'
+                                        ? Border.all(color: const Color(0xFF38BDF8))
+                                        : null,
+                                  ),
+                                  child: const Column(
+                                    children: [
+                                      Text('🎯 small (Präzise)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                                      SizedBox(height: 2),
+                                      Text('Besseres Deutsch (~1.8s)', style: TextStyle(fontSize: 10, color: AppTheme.textSecondary)),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      TextField(
+                        controller: oracleUrlController,
+                        decoration: InputDecoration(
+                          labelText: 'Eigener Server (URL)',
+                          hintText: 'https://ihr-server.de:8088',
+                          filled: true,
+                          fillColor: AppTheme.surfaceLight,
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                          prefixIcon: const Icon(Icons.dns_outlined, size: 18),
+                        ),
+                        style: const TextStyle(fontSize: 13),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: oracleKeyController,
+                        obscureText: obscureKeys,
+                        decoration: InputDecoration(
+                          labelText: 'API-Token (X-API-Key)',
+                          hintText: 'Token eingeben...',
+                          filled: true,
+                          fillColor: AppTheme.surfaceLight,
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                          prefixIcon: const Icon(Icons.key, size: 18),
+                          suffixIcon: IconButton(
+                            icon: Icon(obscureKeys ? Icons.visibility_off : Icons.visibility, size: 18),
+                            onPressed: () {
+                              setDialogState(() {
+                                obscureKeys = !obscureKeys;
+                              });
+                            },
+                          ),
+                        ),
+                        style: const TextStyle(fontSize: 13),
+                      ),
+                      const SizedBox(height: 10),
+                      Row(
+                        children: [
+                          OutlinedButton.icon(
+                            onPressed: () async {
+                              setDialogState(() {
+                                testStatus = 'Teste Verbindung...';
+                                testStatusColor = AppTheme.textSecondary;
+                              });
+                              await geminiService.saveOracleUrl(oracleUrlController.text);
+                              final ok = await geminiService.testOracleConnection();
+                              setDialogState(() {
+                                if (ok) {
+                                  testStatus = '✅ Server online!';
+                                  testStatusColor = const Color(0xFF10B981);
+                                } else {
+                                  testStatus = '❌ Nicht erreichbar';
+                                  testStatusColor = Colors.redAccent;
+                                }
+                              });
+                            },
+                            icon: const Icon(Icons.wifi_protected_setup, size: 16),
+                            label: const Text('Verbindung testen', style: TextStyle(fontSize: 12)),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              testStatus,
+                              style: TextStyle(fontSize: 11, color: testStatusColor, fontWeight: FontWeight.bold),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ] else ...[
+                      const Text(
+                        'Dein Google AI Studio API-Key für Gemini 2.0 Flash (inklusive automatischem 15-RPM Rate-Limiter).',
+                        style: TextStyle(fontSize: 11, color: AppTheme.textSecondary),
+                      ),
+                      const SizedBox(height: 10),
+                      TextField(
+                        controller: geminiKeyController,
+                        obscureText: obscureKeys,
+                        decoration: InputDecoration(
+                          labelText: 'Gemini API-Key',
+                          hintText: 'Hier Gemini API-Key einfügen...',
+                          filled: true,
+                          fillColor: AppTheme.surfaceLight,
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                          prefixIcon: const Icon(Icons.key, size: 18),
+                          suffixIcon: IconButton(
+                            icon: Icon(obscureKeys ? Icons.visibility_off : Icons.visibility, size: 18),
+                            onPressed: () {
+                              setDialogState(() {
+                                obscureKeys = !obscureKeys;
+                              });
+                            },
+                          ),
+                        ),
+                        style: const TextStyle(fontSize: 13),
+                      ),
+                    ],
+                  ],
+                ),
               ),
               actions: [
                 TextButton(
@@ -254,13 +557,25 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
                 ),
                 ElevatedButton(
                   onPressed: () async {
-                    await geminiService.saveApiKey(controller.text);
+                    await geminiService.saveProvider(selectedProvider);
+                    if (isOracle) {
+                      await geminiService.saveOracleUrl(oracleUrlController.text);
+                      await geminiService.saveOracleApiKey(oracleKeyController.text);
+                      await geminiService.saveWhisperModel(selectedWhisperModel);
+                    } else {
+                      await geminiService.saveApiKey(geminiKeyController.text);
+                    }
                     if (ctx.mounted) Navigator.pop(ctx);
                     if (mounted) {
+                      final modelLabel = selectedWhisperModel == 'small' ? 'small (Präzise)' : 'base (Schnell)';
                       ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('✅ Gemini API-Key lokal & sicher gespeichert!'),
-                          backgroundColor: Color(0xFF10B981),
+                        SnackBar(
+                          content: Text(
+                            isOracle
+                                ? '✅ Eigener Server gespeichert (Modell: $modelLabel)!'
+                                : '✅ Google Gemini als aktiver Provider gespeichert!',
+                          ),
+                          backgroundColor: isOracle ? const Color(0xFF10B981) : const Color(0xFFFBBF24),
                         ),
                       );
                     }
@@ -279,7 +594,13 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
   void initState() {
     super.initState();
     _currentSession = widget.session;
-    _audioPlayer = AudioPlayer();
+    _thresholdDb = _currentSession.getAdaptiveThresholdDb();
+    _loudnessEnhancer = AndroidLoudnessEnhancer();
+    _audioPlayer = AudioPlayer(
+      audioPipeline: AudioPipeline(
+        androidAudioEffects: [_loudnessEnhancer],
+      ),
+    );
 
     _initAudioPlayer();
   }
@@ -302,11 +623,16 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
           await _audioPlayer.setFilePath(path);
         }
       }
+
+      try {
+        await _loudnessEnhancer.setEnabled(_autoBoostQuietSounds);
+        await _loudnessEnhancer.setTargetGain(1.8);
+      } catch (_) {}
     } catch (e) {
       debugPrint('AudioPlayer init error: $e');
     }
 
-    _audioPlayer.positionStream.listen((pos) {
+    _positionSub = _audioPlayer.positionStream.listen((pos) {
       _positionNotifier.value = pos;
       if (_isHighlightPlayback && _currentHighlightIndex < _highlightQueue.length) {
         final currentEv = _highlightQueue[_currentHighlightIndex];
@@ -317,7 +643,7 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
       }
     });
 
-    _audioPlayer.playerStateStream.listen((state) {
+    _playerStateSub = _audioPlayer.playerStateStream.listen((state) {
       if (mounted) {
         final playing = state.playing && state.processingState != ProcessingState.completed;
         if (_isPlaying != playing) {
@@ -350,6 +676,7 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
     _currentHighlightIndex = index;
     final ev = _highlightQueue[index];
     _selectedEventId = ev.id;
+    await _applyEventGain(ev.maxDb);
     await _audioPlayer.setSpeed(_playbackSpeed);
     await _audioPlayer.seek(ev.startOffset);
     await _audioPlayer.play();
@@ -377,6 +704,8 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
   @override
   void dispose() {
     _thresholdDebounceTimer?.cancel();
+    _positionSub?.cancel();
+    _playerStateSub?.cancel();
     _audioPlayer.dispose();
     _waveformScrollController.dispose();
     _positionNotifier.dispose();
@@ -474,6 +803,12 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
       if (_audioPlayer.processingState == ProcessingState.completed) {
         await _audioPlayer.seek(Duration.zero);
       }
+      if (_autoBoostQuietSounds) {
+        try {
+          await _loudnessEnhancer.setEnabled(true);
+          await _loudnessEnhancer.setTargetGain(1.8);
+        } catch (_) {}
+      }
       await _audioPlayer.play();
     }
   }
@@ -489,6 +824,7 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
     });
 
     _selectSnippetForEvent(event);
+    await _applyEventGain(event.maxDb);
     await _audioPlayer.play();
   }
 
@@ -693,7 +1029,11 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
 
             // Highlights Auto-Skip Player Bar (Play all noises/speech with auto silence-skipping)
             _buildHighlightPlayerBar(filteredEvents),
-            const SizedBox(height: 16),
+            const SizedBox(height: 14),
+
+            // Expandable Technical Tools (Noise Suppression Sliders, Snippet Export, Fine-tuning)
+            _buildAdvancedToolsAccordion(startMs, endMs, filteredEvents.length),
+            const SizedBox(height: 20),
 
             // Events List Header & Category Filter Chips
             Row(
@@ -751,10 +1091,6 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
               ),
 
             const SizedBox(height: 24),
-
-            // Expandable Technical Tools (Noise Suppression Sliders, Snippet Export, Fine-tuning)
-            _buildAdvancedToolsAccordion(startMs, endMs, filteredEvents.length),
-            const SizedBox(height: 20),
           ],
         ),
       ),
@@ -1329,7 +1665,7 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
       case EventCategory.noise:
         return const Color(0xFF64748B); // Slate
       case EventCategory.general:
-        return AppTheme.primary; // Indigo
+        return const Color(0xFF94A3B8); // Slate Neutral for Unclassified
     }
   }
 
@@ -1352,7 +1688,7 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
       case EventCategory.noise:
         return 'Nebengeräusch';
       case EventCategory.general:
-        return 'Geräusch';
+        return 'Unklassifiziert';
     }
   }
 
@@ -1428,9 +1764,9 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
                 ),
               ),
               IconButton(
-                icon: const Icon(Icons.key, color: Color(0xFFFBBF24), size: 18),
-                tooltip: 'Google Gemini API-Key anpassen',
-                onPressed: _showApiKeyDialog,
+                icon: const Icon(Icons.tune, color: Color(0xFF10B981), size: 18),
+                tooltip: 'KI-Einstellungen & Provider anpassen',
+                onPressed: _showAiSettingsDialog,
               ),
               const SizedBox(width: 4),
               ElevatedButton.icon(
@@ -1593,6 +1929,21 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
               ],
             ),
           ),
+          IconButton(
+            onPressed: _toggleAutoBoost,
+            tooltip: _autoBoostQuietSounds ? 'Auto-Boost aktiv (+20 dB für leise Geräusche)' : 'Auto-Boost aus',
+            style: IconButton.styleFrom(
+              backgroundColor: _autoBoostQuietSounds ? const Color(0xFFF59E0B).withValues(alpha: 0.2) : AppTheme.surfaceLight,
+              padding: const EdgeInsets.all(6),
+              minimumSize: const Size(36, 36),
+            ),
+            icon: Icon(
+              Icons.bolt_rounded,
+              size: 20,
+              color: _autoBoostQuietSounds ? const Color(0xFFF59E0B) : Colors.white54,
+            ),
+          ),
+          const SizedBox(width: 6),
           TextButton(
             onPressed: _togglePlaybackSpeed,
             style: TextButton.styleFrom(
@@ -1851,7 +2202,7 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
                       ),
                       const SizedBox(height: 2),
                       Text(
-                        'Dauer: ${(event.duration.inMilliseconds / 1000).toStringAsFixed(1)}s • Max: ${event.maxDb.toStringAsFixed(1)} dB${event.confidence > 0 ? ' • ${(event.confidence * 100).toInt()}% KI' : ''}',
+                        'Dauer: ${(event.duration.inMilliseconds / 1000).toStringAsFixed(1)}s • Max: ${event.maxDb.toStringAsFixed(1)} dB${(event.confidence > 0 && event.category != EventCategory.general) ? ' • ${(event.confidence * 100).toInt()}% KI' : ''}',
                         style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary),
                       ),
                     ],
@@ -1866,7 +2217,7 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
                     border: Border.all(color: categoryColor.withValues(alpha: 0.6)),
                   ),
                   child: Text(
-                    '${event.categoryEmoji} ${event.subType ?? event.categoryLabel}',
+                    '${event.categoryEmoji} ${event.subType ?? (event.category == EventCategory.general ? 'Unklassifiziert' : event.categoryLabel)}',
                     style: TextStyle(
                       fontSize: 11,
                       fontWeight: FontWeight.bold,

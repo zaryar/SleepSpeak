@@ -31,6 +31,8 @@ api_keys.json
 secrets.json
 *.key
 *.secret
+scratch/
+server/
 
 # AI Assistants & Context Servers
 .gemini/

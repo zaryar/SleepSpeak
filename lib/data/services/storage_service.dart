@@ -5,10 +5,13 @@ import 'package:intl/intl.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 import '../../domain/models/detected_event.dart';
 import '../../domain/models/recording_session.dart';
+import 'audio_trimmer_service.dart';
 import 'gemini_audio_service.dart';
 import 'logger_service.dart';
+import 'notification_service.dart';
 import 'platform_file/platform_file.dart';
 import 'wav_analyzer_service.dart';
 
@@ -16,6 +19,8 @@ class StorageService {
   final LoggerService _logger = LoggerService();
   final WavAnalyzerService _wavAnalyzer = WavAnalyzerService();
   final GeminiAudioService _geminiService = GeminiAudioService();
+  final AudioTrimmerService _audioTrimmer = AudioTrimmerService();
+  final NotificationService _notificationService = NotificationService();
 
   WavAnalyzerService get wavAnalyzer => _wavAnalyzer;
 
@@ -41,6 +46,16 @@ class StorageService {
     return dir;
   }
 
+  Future<AppDirectory?> get _favoritesDir async {
+    if (kIsWeb) return null;
+    final docsDir = await getApplicationDocumentsDirectory();
+    final dir = AppDirectory(p.join(docsDir.path, 'sleep_favorites'));
+    if (!await dir.exists()) {
+      await dir.create(recursive: true);
+    }
+    return dir;
+  }
+
   Future<String> generateAudioFilePath(String sessionId) async {
     if (kIsWeb) return 'web_memory://$sessionId.wav';
     final dir = await _recordingsDir;
@@ -51,6 +66,39 @@ class StorageService {
     if (kIsWeb) return 'web_memory://snippet_$snippetId.m4a';
     final dir = await _snippetsDir;
     return p.join(dir?.path ?? '', 'snippet_$snippetId.m4a');
+  }
+
+  /// Extracts a favorite clip into an independent, compact M4A file in sleep_favorites/
+  /// so it stays preserved and playable even if the original full-night WAV is deleted.
+  Future<String?> extractAndSaveFavoriteClip(RecordingSession session, DetectedEvent event) async {
+    if (kIsWeb) return null;
+    if (event.standaloneAudioPath != null && await AppFile(event.standaloneAudioPath!).exists()) {
+      return event.standaloneAudioPath;
+    }
+
+    final sessionAudioFile = AppFile(session.filePath);
+    if (!await sessionAudioFile.exists()) return null;
+
+    final favDir = await _favoritesDir;
+    if (favDir == null) return null;
+
+    final outPath = p.join(favDir.path, 'fav_${session.id}_${event.id}.m4a');
+    final outFile = AppFile(outPath);
+
+    try {
+      final savedFile = await _audioTrimmer.trimAudioSnippet(
+        inputFile: sessionAudioFile,
+        outputFile: outFile,
+        startOffset: event.startOffset,
+        duration: event.duration,
+      );
+      if (await savedFile.exists()) {
+        return savedFile.path;
+      }
+    } catch (e) {
+      _logger.log('Error extracting favorite clip ${event.id}: $e');
+    }
+    return null;
   }
 
   Future<void> saveSessionMetadata(RecordingSession session) async {
@@ -98,8 +146,18 @@ class StorageService {
           var session = RecordingSession.fromJson(jsonMap);
 
           final audioFile = AppFile(session.filePath);
-          if (await audioFile.exists()) {
+          final audioExists = await audioFile.exists();
+          if (audioExists) {
             final bytes = await audioFile.length();
+
+            // If audio file has no real data and session was interrupted, clean it up
+            if (bytes <= 44 && !session.isFinalized) {
+              _logger.log('Cleaning up empty interrupted session ${session.id} ($bytes bytes)...');
+              try { await audioFile.delete(); } catch (_) {}
+              try { await entity.delete(); } catch (_) {}
+              continue;
+            }
+
             // WAV 16kHz 16bit mono = 32000 bytes per second
             final seconds = (bytes - 44) > 0 ? ((bytes - 44) / 32000).round() : 0;
             final actualDuration = Duration(seconds: seconds);
@@ -107,7 +165,7 @@ class StorageService {
             // Only process unfinalized sessions that were interrupted by a crash/reboot
             if (!session.isFinalized) {
               _logger.log('Finalizing crashed/interrupted session ${session.id} ($bytes bytes)...');
-              final analysis = await _wavAnalyzer.analyzeWavFile(audioFile, thresholdDb: -38.0);
+              final analysis = await _wavAnalyzer.analyzeWavFile(audioFile, thresholdDb: session.getAdaptiveThresholdDb());
 
               session = session.copyWith(
                 duration: actualDuration,
@@ -120,6 +178,10 @@ class StorageService {
               await saveSessionMetadata(session);
               _logger.log('Finalized session ${session.id} with ${session.detectedEvents.length} detected noise events.');
             }
+          } else if (!session.isFinalized) {
+            // Audio file was never created, clean up orphan metadata
+            _logger.log('Deleting orphan unfinalized session ${session.id} (audio file missing)');
+            try { await entity.delete(); } catch (_) {}
           }
         } catch (e) {
           _logger.log('Recovery error for ${entity.path}: $e');
@@ -181,7 +243,7 @@ class StorageService {
     return sessions;
   }
 
-  Future<void> deleteSession(RecordingSession session) async {
+  Future<void> deleteSession(RecordingSession session, {bool keepFavorites = true}) async {
     if (kIsWeb) {
       final prefs = await SharedPreferences.getInstance();
       final currentList = prefs.getStringList(_webStorageKey) ?? [];
@@ -197,11 +259,41 @@ class StorageService {
       return;
     }
 
+    final hasFavorites = session.detectedEvents.any((e) => e.isFavorite);
+
+    if (keepFavorites && hasFavorites) {
+      // 1. Ensure all favorite clips are safely extracted into standalone files
+      final List<DetectedEvent> updatedEvents = [];
+      for (final event in session.detectedEvents) {
+        if (event.isFavorite) {
+          final standalonePath = await extractAndSaveFavoriteClip(session, event);
+          updatedEvents.add(event.copyWith(standaloneAudioPath: standalonePath));
+        }
+      }
+
+      // 2. Delete the huge multi-hundred megabyte raw audio file
+      final audioFile = AppFile(session.filePath);
+      if (await audioFile.exists()) {
+        await audioFile.delete();
+      }
+
+      // 3. Keep the lightweight metadata record holding the standalone favorite clips
+      final preservedSession = session.copyWith(
+        filePath: '', // Raw full-night audio deleted
+        detectedEvents: updatedEvents,
+      );
+      await saveSessionMetadata(preservedSession);
+      _logger.log('Session ${session.id} raw audio deleted; safely preserved ${updatedEvents.length} favorite clips.');
+      return;
+    }
+
+    // No favorites to preserve: completely remove metadata and raw audio
     final dir = await _recordingsDir;
-    if (dir == null) return;
-    final jsonFile = AppFile(p.join(dir.path, '${session.id}.json'));
-    if (await jsonFile.exists()) {
-      await jsonFile.delete();
+    if (dir != null) {
+      final jsonFile = AppFile(p.join(dir.path, '${session.id}.json'));
+      if (await jsonFile.exists()) {
+        await jsonFile.delete();
+      }
     }
 
     final audioFile = AppFile(session.filePath);
@@ -211,20 +303,28 @@ class StorageService {
   }
 
   /// Retention policy: Auto-deletes recordings older than retentionDays
-  /// Protects sessions if they are starred OR contain tagged/starred clips!
+  /// Safely preserves favorite clips by deleting only the huge raw audio file!
   Future<int> runRetentionCleanup({int retentionDays = 7}) async {
     final sessions = await loadAllSessions();
     final cutoffDate = DateTime.now().subtract(Duration(days: retentionDays));
-    int deletedCount = 0;
+    int cleanedCount = 0;
 
     for (final session in sessions) {
-      final hasProtectedClips = session.detectedEvents.any((e) => e.isProtected);
-      if (!session.isFavorite && !hasProtectedClips && session.startTime.isBefore(cutoffDate)) {
-        await deleteSession(session);
-        deletedCount++;
+      if (session.startTime.isBefore(cutoffDate) && !session.isFavorite) {
+        final hasFavorites = session.detectedEvents.any((e) => e.isFavorite);
+        if (hasFavorites) {
+          final audioFile = AppFile(session.filePath);
+          if (await audioFile.exists()) {
+            await deleteSession(session, keepFavorites: true);
+            cleanedCount++;
+          }
+        } else {
+          await deleteSession(session, keepFavorites: false);
+          cleanedCount++;
+        }
       }
     }
-    return deletedCount;
+    return cleanedCount;
   }
 
   /// Creates a single .zip archive containing all .wav and .json files with real-time progress
@@ -286,7 +386,7 @@ class StorageService {
     return zipPath;
   }
 
-  /// Runs AI classification on all events of a session using Google Gemini 1.5 Flash
+  /// Runs AI classification on all events of a session using Oracle Server or Gemini
   Future<RecordingSession> classifySessionWithAI(
     RecordingSession session, {
     void Function(double progress, String status)? onProgress,
@@ -299,49 +399,94 @@ class StorageService {
     final List<DetectedEvent> updatedEvents = [];
     final int total = session.detectedEvents.length;
 
-    onProgress?.call(0.05, 'Initialisiere Google Gemini 1.5 Flash...');
+    final provider = await _geminiService.getProvider();
+    final providerName = provider == AiProvider.oracle ? 'Oracle Server' : 'Google Gemini';
+    onProgress?.call(0.05, 'Initialisiere $providerName...');
 
-    for (int i = 0; i < total; i++) {
-      if (i > 0) {
-        await Future.delayed(const Duration(milliseconds: 350));
+    // Start background Foreground Service & acquire WakeLock so analysis never stops when minimized
+    await _notificationService.startAiAnalysisNotification(
+      title: '🤖 KI-Geräuschanalyse läuft (0%)',
+      content: '0 von $total Clips ($providerName)',
+      progress: 0,
+      maxProgress: total,
+    );
+    try {
+      await WakelockPlus.enable();
+    } catch (_) {}
+
+    try {
+      const int batchSize = 5;
+      for (int i = 0; i < total; i += batchSize) {
+        final int end = (i + batchSize < total) ? i + batchSize : total;
+        final batchEvents = session.detectedEvents.sublist(i, end);
+
+        final percent = ((i / total) * 100).toInt();
+        try {
+          onProgress?.call(
+            0.05 + (0.90 * (i / total)),
+            'Analysiere Geräusche ${i + 1} bis $end von $total ($providerName)...',
+          );
+        } catch (_) {}
+
+        // Update Android notification drawer in real-time
+        await _notificationService.updateAiAnalysisNotification(
+          title: '🤖 KI-Geräuschanalyse ($percent%)',
+          content: 'Clip ${i + 1} bis $end von $total ($providerName)',
+          progress: i,
+          maxProgress: total,
+        );
+
+        try {
+          final batchResults = await _geminiService.classifyAudioSegmentsBatch(
+            wavFile: wavFile,
+            events: batchEvents,
+            onStatusUpdate: (status) {
+              try {
+                onProgress?.call(0.05 + (0.90 * (i / total)), status);
+              } catch (_) {}
+            },
+          );
+
+          for (int j = 0; j < batchEvents.length; j++) {
+            final ev = batchEvents[j];
+            if (j < batchResults.length) {
+              final geminiRes = batchResults[j];
+              updatedEvents.add(ev.copyWith(
+                category: geminiRes.category,
+                confidence: geminiRes.confidence,
+                transcription: geminiRes.transcription,
+                subType: geminiRes.subType,
+                explanation: geminiRes.explanation,
+                dynamicEmoji: geminiRes.dynamicEmoji,
+              ));
+            } else {
+              updatedEvents.add(ev);
+            }
+          }
+        } catch (e, stack) {
+          _logger.log('KI Batch Error for events $i to $end: $e\n$stack');
+          debugPrint('KI Batch Error: $e\n$stack');
+          updatedEvents.addAll(batchEvents);
+        }
       }
-      final ev = session.detectedEvents[i];
-      final eventNum = i + 1;
-      final progressRatio = 0.05 + (0.90 * (i / total));
-
-      onProgress?.call(
-        progressRatio,
-        'Analysiere Geräusch $eventNum von $total (${ev.formatTimestamp()}) mit Gemini...',
-      );
 
       try {
-        final geminiRes = await _geminiService.classifyAudioSegment(
-          wavFile: wavFile,
-          startMs: ev.startOffset.inMilliseconds,
-          durationMs: ev.duration.inMilliseconds,
-        );
-
-        updatedEvents.add(
-          ev.copyWith(
-            category: geminiRes.category,
-            confidence: geminiRes.confidence,
-            transcription: geminiRes.transcription,
-            subType: geminiRes.subType,
-            explanation: geminiRes.explanation,
-            dynamicEmoji: geminiRes.dynamicEmoji,
-          ),
-        );
-      } catch (e) {
-        _logger.log('Gemini Event Error for ${ev.id}: $e');
-        updatedEvents.add(ev);
-      }
+        onProgress?.call(1.0, 'KI-Analyse abgeschlossen ($providerName)!');
+      } catch (_) {}
+      final updatedSession = session.copyWith(detectedEvents: updatedEvents);
+      await saveSessionMetadata(updatedSession);
+      _logger.log('Classified and saved session ${session.id} with ${updatedEvents.length} events via $providerName');
+      return updatedSession;
+    } finally {
+      // Release notification & wakelock cleanly
+      await _notificationService.stopAiAnalysisNotification(
+        completionTitle: '✨ KI-Analyse abgeschlossen!',
+        completionContent: '$total Clips mit $providerName erfolgreich analysiert.',
+      );
+      try {
+        await WakelockPlus.disable();
+      } catch (_) {}
     }
-
-    onProgress?.call(1.0, 'Gemini KI-Analyse abgeschlossen!');
-    final updatedSession = session.copyWith(detectedEvents: updatedEvents);
-    await saveSessionMetadata(updatedSession);
-    _logger.log('Classified and saved session ${session.id} with ${updatedEvents.length} events via Gemini');
-    return updatedSession;
   }
 
   /// Restores all recordings from a .zip backup archive

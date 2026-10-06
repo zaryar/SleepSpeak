@@ -76,9 +76,33 @@ class AudioTrimmerService {
     newBd.setUint32(4, 36 + pcmSubLength, Endian.little);
     newBd.setUint32(40, pcmSubLength, Endian.little);
 
+    final pcmBytes = Uint8List.fromList(bytes.sublist(startByte, endByte));
+
+    // Automatic Peak Normalization & Gain Boost for quiet sounds (whispers, soft movements)
+    if (bitsPerSample == 16 && pcmBytes.length >= 2) {
+      final pcmView = ByteData.sublistView(pcmBytes);
+      int maxAbs = 0;
+      for (int i = 0; i < pcmBytes.length - 1; i += 2) {
+        final sample = pcmView.getInt16(i, Endian.little).abs();
+        if (sample > maxAbs) maxAbs = sample;
+      }
+
+      // If peak is below -3.5 dBFS (maxAbs < 22000), boost up to 32x (~ +30 dB)
+      if (maxAbs > 0 && maxAbs < 22000) {
+        final double gain = (28000.0 / maxAbs).clamp(1.0, 32.0);
+        if (gain > 1.05) {
+          for (int i = 0; i < pcmBytes.length - 1; i += 2) {
+            final sample = pcmView.getInt16(i, Endian.little);
+            final boosted = (sample * gain).round().clamp(-32768, 32767);
+            pcmView.setInt16(i, boosted, Endian.little);
+          }
+        }
+      }
+    }
+
     final builder = BytesBuilder();
     builder.add(newHeader);
-    builder.add(bytes.sublist(startByte, endByte));
+    builder.add(pcmBytes);
 
     await outputFile.writeAsBytes(builder.takeBytes());
     return outputFile;

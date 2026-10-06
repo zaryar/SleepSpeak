@@ -5,11 +5,20 @@ import '../../domain/models/recording_session.dart';
 import '../services/platform_file/platform_file.dart';
 import '../services/storage_service.dart';
 
+class FavoriteClipItem {
+  final RecordingSession session;
+  final DetectedEvent event;
+
+  const FavoriteClipItem({required this.session, required this.event});
+}
+
 class RecordingRepository extends ChangeNotifier {
   final StorageService _storageService = StorageService();
+  StorageService get storageService => _storageService;
 
   List<RecordingSession> _sessions = [];
-  List<RecordingSession> get sessions => List.unmodifiable(_sessions);
+  List<RecordingSession> get sessions => List.unmodifiable(_sessions.where((s) => s.filePath.isNotEmpty));
+  List<RecordingSession> get allSessionsIncludingArchived => List.unmodifiable(_sessions);
 
   bool _isLoading = false;
   bool get isLoading => _isLoading;
@@ -57,6 +66,16 @@ class RecordingRepository extends ChangeNotifier {
     _activeOngoingSession = session;
     await _storageService.saveSessionMetadata(session);
     return session;
+  }
+
+  Future<void> discardOngoingSession() async {
+    if (_activeOngoingSession != null) {
+      final session = _activeOngoingSession!;
+      _activeOngoingSession = null;
+      try {
+        await _storageService.deleteSession(session);
+      } catch (_) {}
+    }
   }
 
   Future<void> autoFlushOngoingSession({
@@ -111,11 +130,26 @@ class RecordingRepository extends ChangeNotifier {
     List<DetectedEvent> events = [];
     List<double> finalWaveform = amplitudeHistory;
 
+    // Estimate room noise floor to set an intelligent adaptive threshold
+    final tempSession = RecordingSession(
+      id: sessionId,
+      title: title,
+      filePath: audioFilePath,
+      startTime: startTime,
+      duration: duration,
+      amplitudeHistory: amplitudeHistory,
+      isFavorite: false,
+      isFinalized: false,
+      fileSizeBytes: sizeBytes,
+      detectedEvents: const [],
+    );
+    final adaptiveThreshold = tempSession.getAdaptiveThresholdDb();
+
     if (!kIsWeb) {
       try {
         final audioFile = AppFile(audioFilePath);
         if (await audioFile.exists()) {
-          final analysis = await _storageService.wavAnalyzer.analyzeWavFile(audioFile, thresholdDb: _defaultNoiseThresholdDb);
+          final analysis = await _storageService.wavAnalyzer.analyzeWavFile(audioFile, thresholdDb: adaptiveThreshold);
           if (analysis.detectedEvents.isNotEmpty) {
             events = analysis.detectedEvents;
           }
@@ -140,7 +174,7 @@ class RecordingRepository extends ChangeNotifier {
     );
 
     if (events.isEmpty && amplitudeHistory.isNotEmpty) {
-      final recalculated = session.recalculateEvents(_defaultNoiseThresholdDb);
+      final recalculated = session.recalculateEvents(session.getAdaptiveThresholdDb());
       session = session.copyWith(detectedEvents: recalculated);
     }
 
@@ -168,17 +202,55 @@ class RecordingRepository extends ChangeNotifier {
     final idx = _sessions.indexWhere((s) => s.id == sessionId);
     if (idx != -1) {
       final session = _sessions[idx];
+      DetectedEvent? targetEvent;
       final updatedEvents = session.detectedEvents.map((e) {
         if (e.id == eventId) {
-          return e.copyWith(isFavorite: !e.isFavorite);
+          final newFav = !e.isFavorite;
+          targetEvent = e.copyWith(isFavorite: newFav);
+          return targetEvent!;
         }
         return e;
       }).toList();
-      final updated = session.copyWith(detectedEvents: updatedEvents);
+
+      var updated = session.copyWith(detectedEvents: updatedEvents);
       _sessions[idx] = updated;
       await _storageService.saveSessionMetadata(updated);
       notifyListeners();
+
+      // If newly favorited, pre-extract the snippet into standalone M4A so it's instantly protected
+      if (targetEvent != null && targetEvent!.isFavorite) {
+        final standalone = await _storageService.extractAndSaveFavoriteClip(updated, targetEvent!);
+        if (standalone != null) {
+          final remapped = updated.detectedEvents.map((e) {
+            if (e.id == eventId) return e.copyWith(standaloneAudioPath: standalone);
+            return e;
+          }).toList();
+          updated = updated.copyWith(detectedEvents: remapped);
+          _sessions[idx] = updated;
+          await _storageService.saveSessionMetadata(updated);
+          notifyListeners();
+        }
+      }
     }
+  }
+
+  /// Returns all favorite clips across all nights (including nights whose raw WAV was deleted),
+  /// sorted with the newest first.
+  List<FavoriteClipItem> getAllFavoriteClips() {
+    final List<FavoriteClipItem> list = [];
+    for (final session in _sessions) {
+      for (final event in session.detectedEvents) {
+        if (event.isFavorite) {
+          list.add(FavoriteClipItem(session: session, event: event));
+        }
+      }
+    }
+    list.sort((a, b) {
+      final timeA = a.session.startTime.add(a.event.startOffset);
+      final timeB = b.session.startTime.add(b.event.startOffset);
+      return timeB.compareTo(timeA);
+    });
+    return list;
   }
 
   Future<void> updateEventTags(String sessionId, String eventId, List<String> tags) async {
@@ -230,7 +302,7 @@ class RecordingRepository extends ChangeNotifier {
     if (idx != -1) {
       final session = _sessions[idx];
       await _storageService.deleteSession(session);
-      _sessions.removeAt(idx);
+      _sessions = await _storageService.loadAllSessions();
       notifyListeners();
     }
   }

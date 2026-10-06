@@ -1,89 +1,96 @@
-# SleepSpeak 🌙
+# SleepSpeak
 
-> **Smart, privacy-first sleep talk & noise recorder for Flutter.**  
-> Automatically records overnight sleep audio, analyzes noise spikes (sleep talking, snoring, movement), and lets you quickly scrub through detected audio events without cloud dependencies.
-
-### 🌐 Live Web Demo: [https://zaryar.github.io/SleepSpeak/](https://zaryar.github.io/SleepSpeak/)
-Teste die Schlafanalyse, den interaktiven Wellenform-Scrubber und den Schwellenwert-Filter direkt online im Browser!
----
-
-## ✨ Features
-
-- **🎙️ Overnight Sleep Recording:** Efficient 16kHz mono WAV recording designed for all-night battery efficiency and Android 14+ Doze Mode compatibility.
-- **⏰ Startverzögerung (Einschlaf-Timer):** Einstellbare Einschlaf-Verzögerung von 1 bis 30 Minuten (mit 10 Min Standard) für geräuschloses Aktivieren der Aufnahme beim Einschlafen.
-- **🤖 KI-Geräuscherkennung & Dynamische Emojis:** Multimodale Audio-Analyse mit Google Gemini:
-  - Differenziert **Schlafreden (🗣️)**, **Schnarchen (😴)**, **Bettbewegungen (🛏️)**, **Verkehr/Autos (🚗)**, **Haushaltsgeräusche (🚪)**, **Husten/Niesen (🤧)** und **Haustiere (🐾)**.
-  - Deutsche Transkription von gesprochenen Wörtern („...“) und Kontext-Erklärung („✨ Deutliches Flüstern beim Aufwachen“).
-- **⚡ Highlights Auto-Skip Player:** Spielt alle erkannten Geräusche nahtlos nacheinander ab – ohne stundenlange Stille – wahlweise mit 1.0x, 1.25x, 1.5x oder 2.0x Geschwindigkeit.
-- **🏷️ Clip-Tagging & 🛡️ 7-Tage-Löschschutz:**
-  - Markiere Clips mit Sternchen oder Tags (`⭐ Favorit`, `🤣 Lustig`, `🔒 Behalten`, `👻 Gruselig`, `💬 Schlafreden`).
-  - Getaggte und favorisierte Clips werden dauerhaft vor der automatischen 7-Tage-Bereinigung geschützt.
-- **🎛️ Smarte Grundrauschen-Kalibrierung:**
-  - 1-Click **„🪄 Auto-Filter (+1 dB)“** oder **„🎯 Hier messen (+1 dB)“** für stumme Nächte ohne Hintergrundrauschen.
-  - Empfindlichkeitsregler erweitert bis **-75 dB**.
-- **📤 1-Click WhatsApp-Export:** Schneidet und exportiert einzelne erkannte Audio-Clips direkt an Freunde oder Gruppen.
-- **📊 Interaktive Wellenform & Timeline:** Flüssiges Audio-Scrubbing mit direkten Sprungmarken für jedes Geräusch.
-- **🛡️ 100% Offline & Local-First:** Alle Audioaufnahmen und Metadaten bleiben standardmäßig vollständig auf dem Gerät.
-- **⚡ Android Doze-Mode & Crash-Schutz:**
-  - Periodisches Auto-Flushing auf die Festplatte alle 30 Sekunden.
-  - Notfall-Autosave bei kritischem Akkustand unter 5%.
+Lokaler Audio-Recorder für Schlafreden und nächtliche Geräusche, entwickelt mit Flutter. Die App nimmt nachts Audio auf, erkennt Geräuschspitzen (Schlafreden, Schnarchen, Bewegungen) und ermöglicht das Durchhören der Segmente über eine interaktive Wellenform.
 
 ---
 
-## 📱 Tech Stack & Packages
+## Screenshots
+
+| Hauptansicht | Detailansicht & Wellenform | Filter & Kalibrierung |
+| :---: | :---: | :---: |
+| ![Hauptansicht](docs/screenshots/home_screen.png) | ![Detailansicht](docs/screenshots/detail_screen.png) | ![Filter und Kalibrierung](docs/screenshots/tools_screen.png) |
+
+---
+
+## Funktionen
+
+- **Nachtaufnahme:** 16-kHz-Mono-WAV-Aufnahme mit Foreground Service und WakeLock für Android 14+ (Doze-Mode-Kompatibilität).
+- **Startverzögerung:** Einstellbarer Einschlaf-Timer (1 bis 30 Minuten, 10 Minuten Standard), damit die Aufnahme erst nach dem Einschlafen startet.
+- **Audio-Klassifizierung:** Optionale Klassifizierung über Google Gemini API oder einen eigenen Whisper-Server (Schlafreden, Schnarchen, Bettbewegungen, Umgebungslärm).
+- **Highlights-Player:** Automatisches Abspielen erkannter Geräusche unter Auslassung von Stillephasen mit variabler Geschwindigkeit (1.0x, 1.25x, 1.5x, 2.0x).
+- **Filter & Rausch-Kalibrierung:** Einstellbarer dB-Schwellenwert bis -75 dB mit 1-Klick-Messung des Raumrauschens.
+- **Clip-Export:** Automatisches Zuschneiden und Teilen einzelner Audioabschnitte als Datei.
+- **Lokale Datenhaltung:** Alle Aufnahmen und Metadaten verbleiben standardmäßig auf dem Gerät.
+- **Crash-Schutz:** Periodisches Speichern aller 30 Sekunden und automatisches Sichern bei kritischem Akkustand unter 5%.
+- **Aufbewahrungsfristen:** Automatisches Bereinigen nicht geschützter Aufnahmen nach 7 Tagen zur Speicherplatzschonung.
+
+---
+
+## Architektur & Abhängigkeiten
 
 - **Framework:** Flutter (Dart 3+)
-- **Audio Recording:** `record`
-- **Audio Playback:** `just_audio`
-- **AI Classification:** Google Gemini Multimodal Audio API (`gemini-3-flash-preview` / `gemini-3.5-flash-lite`)
-- **Background Execution:** `wakelock_plus`, `flutter_local_notifications`
-- **System Monitoring:** `battery_plus`, `permission_handler`
-- **Storage & Sharing:** `path_provider`, `shared_preferences`, `share_plus`, `intl`
+- **Audio:** `record`, `just_audio`
+- **Hintergrundbetrieb:** `wakelock_plus`, `flutter_local_notifications`
+- **Systemstatus:** `battery_plus`, `permission_handler`
+- **Speicherung & Teilen:** `path_provider`, `shared_preferences`, `share_plus`, `intl`
+- **KI-Schnittstelle:** Bring-Your-Own-Key (BYOK) für Google Gemini oder eigene HTTP-Endpoints
 
 ---
 
-## 🚀 Getting Started
+## Installation & Ausführung
 
-### Installation & Run
+### Voraussetzungen
 
-1. **Clone the repository:**
+- Flutter SDK (3.22+)
+- Android SDK mit API Level 34+
+
+### Setup
+
+1. Repository klonen:
    ```bash
    git clone https://github.com/zaryar/SleepSpeak.git
    cd SleepSpeak
    ```
 
-2. **Install dependencies:**
+2. Abhängigkeiten laden:
    ```bash
    flutter pub get
    ```
 
-3. **Run tests:**
+3. Tests ausführen:
    ```bash
    flutter test
    ```
 
-4. **Build Release APK:**
+4. Release-APK bauen:
    ```bash
    flutter build apk --release
    ```
 
 ---
 
-## 🔒 Permissions & Privacy
+## KI-Konfiguration
 
-This application requires the following device permissions:
+Die App enthält keine fest hinterlegten API-Schlüssel oder Server-URLs. Für die KI-Analyse stehen zwei Optionen in den App-Einstellungen zur Verfügung:
 
-| Permission | Purpose |
-| :--- | :--- |
-| `RECORD_AUDIO` | Required to record sleep sounds during the night. |
-| `FOREGROUND_SERVICE_MICROPHONE` | Required on Android 14+ to keep recording active when the screen turns off. |
-| `WAKE_LOCK` | Prevents CPU sleep from interrupting active recordings. |
-| `POST_NOTIFICATIONS` | Displays a persistent notification while recording is running. |
+1. **Google Gemini (Direktmodus):** Kostenlosen Gemini API-Key in den Einstellungen hinterlegen.
+2. **Eigener Server (Whisper):** Eigene Server-URL und optionalen X-API-Key eintragen.
 
-**Privacy Guarantee:** No audio data, timestamps, or usage logs are ever transmitted over the network. Everything is processed and stored locally in the application's sandboxed document directory.
+Ohne hinterlegten Key funktioniert die lokale Rauscherkennung und Wellenform-Analyse uneingeschränkt offline.
 
 ---
 
-## 📄 License
+## Berechtigungen
 
-This project is open source and available under the [MIT License](LICENSE).
+| Berechtigung | Zweck |
+| :--- | :--- |
+| `RECORD_AUDIO` | Aufnahme des Schlaf-Audios über das Mikrofon |
+| `FOREGROUND_SERVICE_MICROPHONE` | Unterbrechungsfreie Aufnahme bei gesperrtem Bildschirm auf Android 14+ |
+| `WAKE_LOCK` | Verhindert das Einfrieren der Audioverarbeitung im Standby |
+| `POST_NOTIFICATIONS` | Laufende Status-Benachrichtigung während aktiver Aufnahmen |
+
+---
+
+## Lizenz
+
+Dieses Projekt ist unter der [MIT License](LICENSE) lizenziert.

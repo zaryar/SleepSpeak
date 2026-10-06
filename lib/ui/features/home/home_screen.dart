@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
+import 'package:just_audio/just_audio.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
@@ -11,6 +12,7 @@ import '../../../data/services/native_file_picker_service.dart';
 import '../../../data/services/notification_service.dart';
 import '../../../data/services/audio_recorder_service.dart';
 import '../../../data/services/logger_service.dart';
+import '../../../data/services/platform_file/platform_file.dart';
 import '../../../data/services/storage_service.dart';
 import '../../../domain/models/recording_session.dart';
 import '../../core/theme.dart';
@@ -39,6 +41,11 @@ class _HomeScreenState extends State<HomeScreen> {
   int _remainingDelaySeconds = 0;
   DateTime? _targetDelayedStartTime;
   Timer? _delayCountdownTimer;
+
+  int _selectedViewTab = 0; // 0 = Aufnahmen, 1 = Favoriten
+  AudioPlayer? _favPlayer;
+  AndroidLoudnessEnhancer? _favLoudnessEnhancer;
+  String? _currentlyPlayingFavId;
 
   @override
   void initState() {
@@ -88,11 +95,143 @@ class _HomeScreenState extends State<HomeScreen> {
     _uiRecordingTimer?.cancel();
     _delayCountdownTimer?.cancel();
     _amplitudeSub?.cancel();
+    _favPlayer?.dispose();
     _recorderService.dispose();
     super.dispose();
   }
 
+  Future<void> _togglePlayFavoriteClip(FavoriteClipItem item) async {
+    if (_currentlyPlayingFavId == item.event.id) {
+      await _favPlayer?.stop();
+      setState(() {
+        _currentlyPlayingFavId = null;
+      });
+      return;
+    }
+
+    if (_favPlayer == null) {
+      _favLoudnessEnhancer = AndroidLoudnessEnhancer();
+      _favPlayer = AudioPlayer(
+        audioPipeline: AudioPipeline(androidAudioEffects: [_favLoudnessEnhancer!]),
+      );
+    }
+    await _favPlayer!.stop();
+
+    try {
+      setState(() {
+        _currentlyPlayingFavId = item.event.id;
+      });
+
+      // Apply automatic loudness boost for quiet favorites
+      try {
+        await _favLoudnessEnhancer?.setEnabled(true);
+        double gainBels = 1.8;
+        if (item.event.maxDb <= -45) {
+          gainBels = 2.8; // +28 dB boost
+        } else if (item.event.maxDb <= -35) {
+          gainBels = 2.0; // +20 dB boost
+        }
+        await _favLoudnessEnhancer?.setTargetGain(gainBels);
+      } catch (_) {}
+
+      // 1. Check if standalone audio path exists
+      if (item.event.standaloneAudioPath != null && await AppFile(item.event.standaloneAudioPath!).exists()) {
+        await _favPlayer!.setFilePath(item.event.standaloneAudioPath!);
+        await _favPlayer!.play();
+      } else if (item.session.filePath.isNotEmpty && await AppFile(item.session.filePath).exists()) {
+        await _favPlayer!.setFilePath(item.session.filePath);
+        await _favPlayer!.seek(item.event.startOffset);
+        await _favPlayer!.play();
+        Timer(item.event.duration, () async {
+          if (_currentlyPlayingFavId == item.event.id && mounted) {
+            await _favPlayer?.stop();
+            setState(() {
+              _currentlyPlayingFavId = null;
+            });
+          }
+        });
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Audiodatei für diesen Favoriten ist nicht mehr verfügbar.')),
+          );
+          setState(() {
+            _currentlyPlayingFavId = null;
+          });
+        }
+        return;
+      }
+
+      _favPlayer!.playerStateStream.listen((state) {
+        if (state.processingState == ProcessingState.completed) {
+          if (mounted && _currentlyPlayingFavId == item.event.id) {
+            setState(() {
+              _currentlyPlayingFavId = null;
+            });
+          }
+        }
+      });
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Fehler beim Abspielen: $e')),
+        );
+        setState(() {
+          _currentlyPlayingFavId = null;
+        });
+      }
+    }
+  }
+
+  Future<void> _shareFavoriteClip(FavoriteClipItem item) async {
+    try {
+      String? path = item.event.standaloneAudioPath;
+      if (path == null || !await AppFile(path).exists()) {
+        if (item.session.filePath.isNotEmpty && await AppFile(item.session.filePath).exists()) {
+          path = await widget.repository.storageService.extractAndSaveFavoriteClip(item.session, item.event);
+        }
+      }
+
+      if (path != null && await AppFile(path).exists()) {
+        await Share.shareXFiles(
+          [XFile(path)],
+          text: 'Hör dir diesen Schlaf-Moment an (${item.event.categoryLabel}) 🌙',
+        );
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Clip konnte zum Teilen nicht exportiert werden.')),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Fehler beim Teilen: $e')),
+        );
+      }
+    }
+  }
+
   Future<void> _startDelayedRecording() async {
+    final hasPerm = await _recorderService.hasMicPermission();
+    if (!hasPerm) {
+      final micStatus = await Permission.microphone.request();
+      if (!micStatus.isGranted) {
+        if (mounted) {
+          if (micStatus.isPermanentlyDenied) {
+            _showPermissionSettingsDialog();
+          } else {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Mikrofon-Berechtigung wird für die Aufnahme benötigt.')),
+            );
+          }
+        }
+        return;
+      }
+    }
+    await Permission.notification.request();
+
     final now = DateTime.now();
     final targetTime = now.add(Duration(minutes: _startDelayMinutes));
     final targetTimeFormatted = DateFormat('HH:mm').format(targetTime);
@@ -108,8 +247,9 @@ class _HomeScreenState extends State<HomeScreen> {
       await WakelockPlus.enable();
     }
 
-    // 2. Start Foreground Service so Android 14 Doze mode never pauses the timer
+    // 2. Start foreground service with partial wakelock and native lockscreen countdown chronometer
     await _notificationService.showDelayedTimerNotification(
+      targetEpochMs: targetTime.millisecondsSinceEpoch,
       timeRemainingText: '$_startDelayMinutes Min',
       targetStartTime: targetTimeFormatted,
     );
@@ -131,18 +271,20 @@ class _HomeScreenState extends State<HomeScreen> {
           _targetDelayedStartTime = null;
           _remainingDelaySeconds = 0;
         });
-        await _toggleSleepRecording();
+        await _beginSleepRecordingSession();
       } else {
         final diffSeconds = _targetDelayedStartTime!.difference(currentTime).inSeconds;
         setState(() {
           _remainingDelaySeconds = diffSeconds > 0 ? diffSeconds : 0;
         });
 
-        // Update notification every 30 seconds
-        if (diffSeconds > 0 && diffSeconds % 30 == 0) {
+        // The native notification chronometer counts down every second on the lockscreen!
+        // We only update text every 60 seconds
+        if (diffSeconds > 0 && diffSeconds % 60 == 0) {
           final remMins = (diffSeconds / 60).ceil();
           final remText = remMins > 1 ? '$remMins Min' : '$diffSeconds Sek';
           await _notificationService.showDelayedTimerNotification(
+            targetEpochMs: targetTime.millisecondsSinceEpoch,
             timeRemainingText: remText,
             targetStartTime: targetTimeFormatted,
           );
@@ -161,7 +303,7 @@ class _HomeScreenState extends State<HomeScreen> {
     if (!kIsWeb) {
       await WakelockPlus.disable();
     }
-    await _notificationService.cancelRecordingNotification();
+    await _notificationService.cancelDelayedTimerNotification();
   }
 
   Future<void> _startImmediatelyFromDelayed() async {
@@ -171,7 +313,7 @@ class _HomeScreenState extends State<HomeScreen> {
       _targetDelayedStartTime = null;
       _remainingDelaySeconds = 0;
     });
-    await _toggleSleepRecording();
+    await _beginSleepRecordingSession();
   }
 
   void _showDelayPickerModal() {
@@ -307,9 +449,13 @@ class _HomeScreenState extends State<HomeScreen> {
         final status = await Permission.microphone.request();
         if (!status.isGranted) {
           if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Mikrofon-Berechtigung erforderlich!')),
-            );
+            if (status.isPermanentlyDenied) {
+              _showPermissionSettingsDialog();
+            } else {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Mikrofon-Berechtigung erforderlich!')),
+              );
+            }
           }
           return;
         }
@@ -384,42 +530,88 @@ class _HomeScreenState extends State<HomeScreen> {
         }
       }
     } else {
-      final micStatus = await Permission.microphone.request();
-      await Permission.notification.request();
-
-      if (!micStatus.isGranted) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Mikrofon-Berechtigung wird für die Aufnahme benötigt.')),
-          );
+      final hasPerm = await _recorderService.hasMicPermission();
+      if (!hasPerm) {
+        final micStatus = await Permission.microphone.request();
+        if (!micStatus.isGranted) {
+          if (mounted) {
+            if (micStatus.isPermanentlyDenied) {
+              _showPermissionSettingsDialog();
+            } else {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Mikrofon-Berechtigung wird für die Aufnahme benötigt.')),
+              );
+            }
+          }
+          return;
         }
-        return;
       }
+      await Permission.notification.request();
+      await _beginSleepRecordingSession();
+    }
+  }
 
-      final startTime = DateTime.now();
-      final sessionId = 'sleep_${startTime.millisecondsSinceEpoch}';
-      final storageService = StorageService();
-      final targetPath = await storageService.generateAudioFilePath(sessionId);
+  Future<bool> _beginSleepRecordingSession() async {
+    final startTime = DateTime.now();
+    final sessionId = 'sleep_${startTime.millisecondsSinceEpoch}';
+    final storageService = StorageService();
+    final targetPath = await storageService.generateAudioFilePath(sessionId);
 
-      // Save initial unfinalized session on disk for crash recovery
-      await widget.repository.createOngoingSession(
-        audioFilePath: targetPath,
-        startTime: startTime,
-      );
+    // Save initial unfinalized session on disk for crash recovery
+    await widget.repository.createOngoingSession(
+      audioFilePath: targetPath,
+      startTime: startTime,
+    );
 
-      final success = await _recorderService.startSleepRecording(targetPath);
-      if (success) {
-        _uiRecordingTimer?.cancel();
-        _uiRecordingTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-          if (mounted) setState(() {});
-        });
-      } else if (mounted) {
+    final success = await _recorderService.startSleepRecording(targetPath);
+    if (success) {
+      _uiRecordingTimer?.cancel();
+      _uiRecordingTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (mounted) setState(() {});
+      });
+    } else {
+      await widget.repository.discardOngoingSession();
+      if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Fehler beim Starten der Aufnahme.')),
         );
       }
-      setState(() {});
     }
+    if (mounted) setState(() {});
+    return success;
+  }
+
+  void _showPermissionSettingsDialog() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.mic_off, color: Colors.redAccent),
+            SizedBox(width: 8),
+            Text('Mikrofon erforderlich'),
+          ],
+        ),
+        content: const Text(
+          'Die Mikrofon-Berechtigung wurde verweigert. '
+          'Damit SleepSpeak deine Schlafgeräusche aufnehmen kann, musst du die Berechtigung in den Android-Einstellungen aktivieren.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Abbrechen'),
+          ),
+          ElevatedButton.icon(
+            onPressed: () async {
+              Navigator.pop(ctx);
+              await openAppSettings();
+            },
+            icon: const Icon(Icons.settings),
+            label: const Text('Einstellungen öffnen'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _showLogDialog() async {
@@ -771,25 +963,105 @@ class _HomeScreenState extends State<HomeScreen> {
                       ],
                       const SizedBox(height: 24),
 
-                      // Section Title
-                      const Align(
-                        alignment: Alignment.centerLeft,
-                        child: Text(
-                          'Deine Aufnahmen',
-                          style: TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                            color: AppTheme.textPrimary,
-                          ),
-                        ),
+                      // STATISTICS CARD
+                      _buildStatisticsCard(),
+                      if (widget.repository.sessions.isNotEmpty)
+                        const SizedBox(height: 24),
+
+                      // Tab Switcher: Aufnahmen vs. Favoriten
+                      Builder(
+                        builder: (ctx) {
+                          final favoriteClips = widget.repository.getAllFavoriteClips();
+                          return Row(
+                            children: [
+                              Expanded(
+                                child: InkWell(
+                                  onTap: () => setState(() => _selectedViewTab = 0),
+                                  borderRadius: BorderRadius.circular(12),
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
+                                    decoration: BoxDecoration(
+                                      color: _selectedViewTab == 0
+                                          ? AppTheme.primary.withValues(alpha: 0.18)
+                                          : Colors.transparent,
+                                      borderRadius: BorderRadius.circular(12),
+                                      border: Border.all(
+                                        color: _selectedViewTab == 0 ? AppTheme.primary : Colors.white12,
+                                        width: _selectedViewTab == 0 ? 1.5 : 1.0,
+                                      ),
+                                    ),
+                                    child: Row(
+                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      children: [
+                                        Icon(
+                                          Icons.history,
+                                          color: _selectedViewTab == 0 ? AppTheme.primary : AppTheme.textSecondary,
+                                          size: 18,
+                                        ),
+                                        const SizedBox(width: 8),
+                                        Text(
+                                          'Aufnahmen (${widget.repository.sessions.length})',
+                                          style: TextStyle(
+                                            fontSize: 13,
+                                            fontWeight: FontWeight.bold,
+                                            color: _selectedViewTab == 0 ? Colors.white : AppTheme.textSecondary,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: InkWell(
+                                  onTap: () => setState(() => _selectedViewTab = 1),
+                                  borderRadius: BorderRadius.circular(12),
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
+                                    decoration: BoxDecoration(
+                                      color: _selectedViewTab == 1
+                                          ? const Color(0xFFFBBF24).withValues(alpha: 0.18)
+                                          : Colors.transparent,
+                                      borderRadius: BorderRadius.circular(12),
+                                      border: Border.all(
+                                        color: _selectedViewTab == 1 ? const Color(0xFFFBBF24) : Colors.white12,
+                                        width: _selectedViewTab == 1 ? 1.5 : 1.0,
+                                      ),
+                                    ),
+                                    child: Row(
+                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      children: [
+                                        Icon(
+                                          Icons.star,
+                                          color: _selectedViewTab == 1 ? const Color(0xFFFBBF24) : AppTheme.textSecondary,
+                                          size: 18,
+                                        ),
+                                        const SizedBox(width: 8),
+                                        Text(
+                                          'Favoriten (${favoriteClips.length})',
+                                          style: TextStyle(
+                                            fontSize: 13,
+                                            fontWeight: FontWeight.bold,
+                                            color: _selectedViewTab == 1 ? Colors.white : AppTheme.textSecondary,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          );
+                        },
                       ),
-                      const SizedBox(height: 8),
+                      const SizedBox(height: 10),
                     ],
                   ),
                 ),
               ),
 
-              // Sessions List
+              // Content based on selected Tab
               if (widget.repository.isLoading)
                 const SliverToBoxAdapter(
                   child: Center(
@@ -799,36 +1071,82 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                   ),
                 )
-              else if (widget.repository.sessions.isEmpty)
-                const SliverToBoxAdapter(
-                  child: Padding(
-                    padding: EdgeInsets.all(32.0),
-                    child: Column(
-                      children: [
-                        Icon(Icons.nightlight_round, size: 48, color: AppTheme.textSecondary),
-                        SizedBox(height: 12),
-                        Text(
-                          'Noch keine Schlafaufnahmen vorhanden.\nDrücke heute Nacht auf Aufnahme!',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(color: AppTheme.textSecondary),
+              else if (_selectedViewTab == 0) ...[
+                // TAB 0: Aufnahmen
+                if (widget.repository.sessions.isEmpty)
+                  const SliverToBoxAdapter(
+                    child: Padding(
+                      padding: EdgeInsets.all(32.0),
+                      child: Column(
+                        children: [
+                          Icon(Icons.nightlight_round, size: 48, color: AppTheme.textSecondary),
+                          SizedBox(height: 12),
+                          Text(
+                            'Noch keine Schlafaufnahmen vorhanden.\nDrücke heute Nacht auf Aufnahme!',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(color: AppTheme.textSecondary),
+                          ),
+                        ],
+                      ),
+                    ),
+                  )
+                else
+                  SliverPadding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    sliver: SliverList(
+                      delegate: SliverChildBuilderDelegate(
+                        (context, index) {
+                          final session = widget.repository.sessions[index];
+                          return _buildSessionItem(session);
+                        },
+                        childCount: widget.repository.sessions.length,
+                      ),
+                    ),
+                  ),
+              ] else ...[
+                // TAB 1: Favoriten
+                Builder(
+                  builder: (ctx) {
+                    final favList = widget.repository.getAllFavoriteClips();
+                    if (favList.isEmpty) {
+                      return const SliverToBoxAdapter(
+                        child: Padding(
+                          padding: EdgeInsets.all(32.0),
+                          child: Column(
+                            children: [
+                              Icon(Icons.star_border_rounded, size: 54, color: Color(0xFFFBBF24)),
+                              SizedBox(height: 14),
+                              Text(
+                                'Noch keine Favoriten gespeichert',
+                                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.white),
+                              ),
+                              SizedBox(height: 8),
+                              Text(
+                                'Tippe in einer Nachtaufnahme auf das ⭐ Stern-Symbol bei lustigen oder wichtigen Geräuschen.\n\nFavoriten werden automatisch als eigene Audio-Datei gesichert und bleiben für immer erhalten, selbst wenn alte Nächte gelöscht werden!',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(color: AppTheme.textSecondary, fontSize: 13),
+                              ),
+                            ],
+                          ),
                         ),
-                      ],
-                    ),
-                  ),
-                )
-              else
-                SliverPadding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  sliver: SliverList(
-                    delegate: SliverChildBuilderDelegate(
-                      (context, index) {
-                        final session = widget.repository.sessions[index];
-                        return _buildSessionItem(session);
-                      },
-                      childCount: widget.repository.sessions.length,
-                    ),
-                  ),
+                      );
+                    }
+
+                    return SliverPadding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      sliver: SliverList(
+                        delegate: SliverChildBuilderDelegate(
+                          (context, index) {
+                            final item = favList[index];
+                            return _buildFavoriteClipCard(item);
+                          },
+                          childCount: favList.length,
+                        ),
+                      ),
+                    );
+                  },
                 ),
+              ],
             ],
           );
         },
@@ -1214,12 +1532,163 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  Widget _buildFavoriteClipCard(FavoriteClipItem item) {
+    final event = item.event;
+    final session = item.session;
+    final isPlaying = _currentlyPlayingFavId == event.id;
+    final eventTime = session.startTime.add(event.startOffset);
+    final dateStr = DateFormat('dd. MMM yyyy • HH:mm').format(eventTime);
+    final durationSec = (event.duration.inMilliseconds / 1000).toStringAsFixed(1);
+    final isSpeech = event.isSpeech;
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 12),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(
+          color: isPlaying ? const Color(0xFFFBBF24) : Colors.white.withValues(alpha: 0.08),
+          width: isPlaying ? 1.5 : 1.0,
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Top Row: Date, Category badge, Star un-favorite
+            Row(
+              children: [
+                Text(
+                  '$dateStr Uhr',
+                  style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+                ),
+                const Spacer(),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: isSpeech
+                        ? const Color(0xFF10B981).withValues(alpha: 0.2)
+                        : AppTheme.primary.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(event.dynamicEmoji ?? (isSpeech ? '🗣️' : '🔊'), style: const TextStyle(fontSize: 12)),
+                      const SizedBox(width: 4),
+                      Text(
+                        event.subType ?? event.categoryLabel,
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                          color: isSpeech ? const Color(0xFF34D399) : AppTheme.primary,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 6),
+                IconButton(
+                  icon: const Icon(Icons.star, color: Color(0xFFFBBF24), size: 20),
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                  tooltip: 'Aus Favoriten entfernen',
+                  onPressed: () => widget.repository.toggleEventFavorite(session.id, event.id),
+                ),
+              ],
+            ),
+
+            // Transcription (if available)
+            if (event.transcription != null && event.transcription!.trim().isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFBBF24).withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: const Color(0xFFFBBF24).withValues(alpha: 0.25)),
+                ),
+                child: Text(
+                  '„${event.transcription!.trim()}“',
+                  style: const TextStyle(
+                    fontStyle: FontStyle.italic,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFFFEF3C7),
+                  ),
+                ),
+              ),
+            ],
+
+            // Explanation / Subtitle
+            if (event.explanation != null && event.explanation!.isNotEmpty) ...[
+              const SizedBox(height: 6),
+              Text(
+                event.explanation!,
+                style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+              ),
+            ],
+
+            const SizedBox(height: 12),
+
+            // Controls & Meta
+            Row(
+              children: [
+                // Play / Stop
+                ElevatedButton.icon(
+                  onPressed: () => _togglePlayFavoriteClip(item),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: isPlaying ? const Color(0xFFFBBF24) : AppTheme.primary,
+                    foregroundColor: Colors.black,
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
+                  icon: Icon(isPlaying ? Icons.stop_rounded : Icons.play_arrow_rounded, size: 20),
+                  label: Text(
+                    isPlaying ? 'Stoppen' : 'Anhören (${durationSec}s)',
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                  ),
+                ),
+                const SizedBox(width: 8),
+
+                // Share
+                IconButton.outlined(
+                  icon: const Icon(Icons.share_rounded, size: 18),
+                  tooltip: 'Clip teilen',
+                  style: IconButton.styleFrom(
+                    side: const BorderSide(color: Colors.white24),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
+                  onPressed: () => _shareFavoriteClip(item),
+                ),
+
+                const Spacer(),
+
+                // Peak dB
+                Text(
+                  '${event.maxDb.toStringAsFixed(0)} dB',
+                  style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Future<void> _confirmDelete(RecordingSession session) async {
+    final hasFavorites = session.detectedEvents.any((e) => e.isFavorite);
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Aufnahme löschen?'),
-        content: Text('Möchtest du "${session.title}" wirklich unwiderruflich löschen?'),
+        content: Text(
+          hasFavorites
+              ? 'Möchtest du "${session.title}" löschen?\n\n⭐ Hinweis: Deine markierten Favoriten-Clips werden automatisch isoliert und bleiben im Favoriten-Tab dauerhaft erhalten!\n\nDie große Rohaufnahme wird gelöscht, um Speicherplatz zu sparen.'
+              : 'Möchtest du "${session.title}" wirklich unwiderruflich löschen?',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
@@ -1228,7 +1697,7 @@ class _HomeScreenState extends State<HomeScreen> {
           ElevatedButton(
             style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
             onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Löschen'),
+            child: Text(hasFavorites ? 'Bereinigen & Favoriten behalten' : 'Löschen'),
           ),
         ],
       ),
@@ -1244,6 +1713,102 @@ class _HomeScreenState extends State<HomeScreen> {
     final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
     final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
     return '${h}h ${m}m ${s}s';
+  }
+
+  Widget _buildStatisticsCard() {
+    final sessions = widget.repository.sessions;
+    if (sessions.isEmpty) return const SizedBox.shrink();
+
+    final now = DateTime.now();
+    final last7Days = now.subtract(const Duration(days: 7));
+    final recentSessions = sessions.where((s) => s.startTime.isAfter(last7Days)).toList();
+
+    int totalDurationSeconds = 0;
+    int totalEvents = 0;
+    for (var s in recentSessions) {
+      totalDurationSeconds += s.duration.inSeconds;
+      totalEvents += s.detectedEvents.length;
+    }
+
+    final totalHours = totalDurationSeconds / 3600;
+    final avgEvents = recentSessions.isEmpty ? 0 : (totalEvents / recentSessions.length).round();
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppTheme.surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppTheme.surfaceLight),
+        boxShadow: const [
+          BoxShadow(
+            color: Colors.black12,
+            blurRadius: 8,
+            offset: Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.bar_chart, color: AppTheme.primary),
+              SizedBox(width: 8),
+              Text(
+                '7-Tage Schlaf-Statistik',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceAround,
+            children: [
+              _buildStatItem(
+                icon: Icons.access_time,
+                value: '${totalHours.toStringAsFixed(1)}h',
+                label: 'Gesamtschlaf',
+              ),
+              _buildStatItem(
+                icon: Icons.graphic_eq,
+                value: '$avgEvents',
+                label: 'Ø Geräusche',
+              ),
+              _buildStatItem(
+                icon: Icons.nightlight_round,
+                value: '${recentSessions.length}',
+                label: 'Nächte',
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStatItem({required IconData icon, required String value, required String label}) {
+    return Column(
+      children: [
+        Container(
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            color: AppTheme.primary.withValues(alpha: 0.15),
+            shape: BoxShape.circle,
+          ),
+          child: Icon(icon, color: AppTheme.primary, size: 24),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          value,
+          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          label,
+          style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+        ),
+      ],
+    );
   }
 
   Widget _buildWebNoticeCard() {

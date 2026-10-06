@@ -24,6 +24,7 @@ class DetectedEvent {
   final String? dynamicEmoji; // e.g. 🗣️, 😴, 🛏️, 🚗, 🚪, 🤧, 🐾
   final List<String> tags; // e.g. ["⭐ Favorit", "🤣 Lustig", "🔒 Gesichert"]
   final bool isFavorite;
+  final String? standaloneAudioPath;
 
   const DetectedEvent({
     required this.id,
@@ -39,6 +40,7 @@ class DetectedEvent {
     this.dynamicEmoji,
     this.tags = const [],
     this.isFavorite = false,
+    this.standaloneAudioPath,
   });
 
   bool get isProtected => isFavorite || tags.isNotEmpty;
@@ -77,7 +79,7 @@ class DetectedEvent {
       case EventCategory.noise:
         return 'Nebengeräusch';
       case EventCategory.general:
-        return 'Geräusch';
+        return 'Unklassifiziert';
     }
   }
 
@@ -121,6 +123,7 @@ class DetectedEvent {
     String? dynamicEmoji,
     List<String>? tags,
     bool? isFavorite,
+    String? standaloneAudioPath,
   }) {
     return DetectedEvent(
       id: id ?? this.id,
@@ -136,6 +139,7 @@ class DetectedEvent {
       dynamicEmoji: dynamicEmoji ?? this.dynamicEmoji,
       tags: tags ?? this.tags,
       isFavorite: isFavorite ?? this.isFavorite,
+      standaloneAudioPath: standaloneAudioPath ?? this.standaloneAudioPath,
     );
   }
 
@@ -153,6 +157,7 @@ class DetectedEvent {
         'dynamicEmoji': dynamicEmoji,
         'tags': tags,
         'isFavorite': isFavorite,
+        'standaloneAudioPath': standaloneAudioPath,
       };
 
   factory DetectedEvent.fromJson(Map<String, dynamic> json) {
@@ -181,6 +186,7 @@ class DetectedEvent {
       dynamicEmoji: json['dynamicEmoji'] as String?,
       tags: (json['tags'] as List<dynamic>?)?.map((e) => e.toString()).toList() ?? const [],
       isFavorite: json['isFavorite'] as bool? ?? false,
+      standaloneAudioPath: json['standaloneAudioPath'] as String?,
     );
   }
 
