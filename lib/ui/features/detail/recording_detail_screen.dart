@@ -490,17 +490,18 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
                           OutlinedButton.icon(
                             onPressed: () async {
                               setDialogState(() {
-                                testStatus = 'Teste Verbindung...';
+                                testStatus = 'Prüfe Server & Token...';
                                 testStatusColor = AppTheme.textSecondary;
                               });
                               await geminiService.saveOracleUrl(oracleUrlController.text);
-                              final ok = await geminiService.testOracleConnection();
+                              await geminiService.saveOracleApiKey(oracleKeyController.text);
+                              final result = await geminiService.testOracleAuthentication();
                               setDialogState(() {
-                                if (ok) {
-                                  testStatus = '✅ Server online!';
+                                if (result.contains('autorisiert') || result == 'OK') {
+                                  testStatus = '✅ $result';
                                   testStatusColor = const Color(0xFF10B981);
                                 } else {
-                                  testStatus = '❌ Nicht erreichbar';
+                                  testStatus = '❌ $result';
                                   testStatusColor = Colors.redAccent;
                                 }
                               });

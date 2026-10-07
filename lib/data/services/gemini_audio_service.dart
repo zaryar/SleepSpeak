@@ -96,15 +96,7 @@ class GeminiAudioService {
     final prefs = await SharedPreferences.getInstance();
     final stored = prefs.getString(_prefOracleApiKey);
     if (stored != null && stored.trim().isNotEmpty) {
-      if (stored == 'sleepspeak_oracle_secret_token_2026') {
-        if (_envOracleApiKey.isNotEmpty) {
-          await prefs.setString(_prefOracleApiKey, _envOracleApiKey);
-          return _envOracleApiKey;
-        }
-        await prefs.remove(_prefOracleApiKey);
-      } else {
-        return stored.trim();
-      }
+      return stored.trim();
     }
     if (_envOracleApiKey.isNotEmpty) {
       return _envOracleApiKey;
@@ -151,6 +143,40 @@ class GeminiAudioService {
       return res.statusCode == 200;
     } catch (_) {
       return false;
+    }
+  }
+
+  /// Tests both server reachability AND API-Key authentication
+  Future<String> testOracleAuthentication() async {
+    try {
+      final url = await getOracleUrl();
+      if (url.isEmpty) return 'Keine Server-URL hinterlegt';
+
+      final healthUri = Uri.parse('$url/health');
+      final healthRes = await http.get(healthUri).timeout(const Duration(seconds: 4));
+      if (healthRes.statusCode != 200) {
+        return 'Server HTTP ${healthRes.statusCode}';
+      }
+
+      final apiKey = await getOracleApiKey();
+      final classifyUri = Uri.parse('$url/api/v1/classify');
+      final req = http.MultipartRequest('POST', classifyUri);
+      req.headers['X-API-Key'] = apiKey;
+      req.files.add(http.MultipartFile.fromBytes(
+        'audio',
+        Uint8List.fromList('RIFF....WAVEfmt ....data....'.codeUnits),
+        filename: 'test.wav',
+      ));
+      final streamed = await req.send().timeout(const Duration(seconds: 5));
+      if (streamed.statusCode == 401) {
+        return 'Ungültiger Token (401)';
+      } else if (streamed.statusCode == 200) {
+        return 'Online & autorisiert!';
+      } else {
+        return 'Server-Status: ${streamed.statusCode}';
+      }
+    } catch (_) {
+      return 'Nicht erreichbar';
     }
   }
 
@@ -240,8 +266,22 @@ class GeminiAudioService {
           explanation: expl,
           dynamicEmoji: emoji,
         );
+      } else if (response.statusCode == 401) {
+        _logger.log('Oracle AI Server HTTP 401: Unauthorized token');
+        return const GeminiAudioClassificationResult(
+          category: EventCategory.general,
+          confidence: 0.0,
+          subType: 'Falscher API-Token',
+          explanation: 'Ungültiger API-Token (401 Unauthorized). Bitte API-Token in den Einstellungen prüfen.',
+        );
       } else {
         _logger.log('Oracle AI Server HTTP ${response.statusCode}: ${response.body}');
+        return GeminiAudioClassificationResult(
+          category: EventCategory.general,
+          confidence: 0.0,
+          subType: 'Serverfehler',
+          explanation: 'HTTP ${response.statusCode}: Server meldete einen Fehler.',
+        );
       }
     } catch (e) {
       _logger.log('Oracle AI Server Error: $e');
