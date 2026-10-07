@@ -96,6 +96,10 @@ class GeminiAudioService {
     final prefs = await SharedPreferences.getInstance();
     final stored = prefs.getString(_prefOracleApiKey);
     if (stored != null && stored.trim().isNotEmpty) {
+      if (stored == 'd36e140044d132b31c105a18ad55b05dcd8807ace0a83ac7784691c47d5b4cdf' && _envOracleApiKey.isNotEmpty) {
+        await prefs.setString(_prefOracleApiKey, _envOracleApiKey);
+        return _envOracleApiKey;
+      }
       return stored.trim();
     }
     if (_envOracleApiKey.isNotEmpty) {
