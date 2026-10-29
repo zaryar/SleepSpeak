@@ -119,6 +119,7 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
     try {
       await Permission.notification.request();
     } catch (_) {}
+    if (!mounted) return;
 
     if (_currentSession.detectedEvents.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -412,7 +413,7 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
                                     children: [
                                       Text('⚡ base (Schnell)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
                                       SizedBox(height: 2),
-                                      Text('~0.4s pro Clip', style: TextStyle(fontSize: 10, color: AppTheme.textSecondary)),
+                                      Text('~3s pro Clip', style: TextStyle(fontSize: 10, color: AppTheme.textSecondary)),
                                     ],
                                   ),
                                 ),
@@ -440,7 +441,7 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
                                     children: [
                                       Text('🎯 small (Präzise)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
                                       SizedBox(height: 2),
-                                      Text('Besseres Deutsch (~1.8s)', style: TextStyle(fontSize: 10, color: AppTheme.textSecondary)),
+                                      Text('Besseres Deutsch (~6s)', style: TextStyle(fontSize: 10, color: AppTheme.textSecondary)),
                                     ],
                                   ),
                                 ),

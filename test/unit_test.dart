@@ -1,4 +1,8 @@
+import 'dart:io' as io;
+import 'dart:math';
+import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:path/path.dart' as p;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sleep_recorder/data/services/gemini_audio_service.dart';
 import 'package:sleep_recorder/data/services/platform_file/platform_file.dart';
@@ -431,6 +435,70 @@ void main() {
       // Test trailing slash removal on save
       await service.saveOracleUrl('https://custom-server.local:8088///');
       expect(await service.getOracleUrl(), equals('https://custom-server.local:8088'));
+    });
+  });
+
+  group('Snippet Loudness Normalization Tests', () {
+    Uint8List pcm(List<int> samples) {
+      final bytes = Uint8List(samples.length * 2);
+      final bd = ByteData.sublistView(bytes);
+      for (int i = 0; i < samples.length; i++) {
+        bd.setInt16(i * 2, samples[i], Endian.little);
+      }
+      return bytes;
+    }
+
+    List<int> samplesOf(Uint8List bytes) {
+      final bd = ByteData.sublistView(bytes);
+      return List.generate(bytes.length ~/ 2, (i) => bd.getInt16(i * 2, Endian.little));
+    }
+
+    double rmsDb(List<int> s) => 20 * log(sqrt(s.fold<double>(0, (a, x) => a + x * x) / s.length) / 32768) / ln10;
+
+    test('quiet speech with a loud click is boosted by RMS, not limited by the click peak', () {
+      // ~-48 dBFS sine "speech" plus a single click at -27 dBFS (the 01:26 case)
+      final samples = List<int>.generate(16000, (i) => (130 * sin(2 * pi * 200 * i / 16000)).round());
+      samples[8000] = 1439;
+      final out = samplesOf(normalizePcm16Loudness(pcm(samples)));
+
+      expect(rmsDb(out), greaterThan(-21.0));
+      expect(out.every((s) => s.abs() <= 32767 * 0.95 + 1), isTrue);
+    });
+
+    test('loud audio and digital silence are left untouched', () {
+      final loud = pcm(List<int>.generate(1600, (i) => (12000 * sin(2 * pi * 300 * i / 16000)).round()));
+      expect(normalizePcm16Loudness(loud), same(loud));
+
+      final silence = pcm(List<int>.filled(1600, 0));
+      expect(normalizePcm16Loudness(silence), same(silence));
+    });
+
+    test('gain is capped so pure room noise is not amplified without limit', () {
+      final noise = List<int>.generate(1600, (i) => i.isEven ? 3 : -3);
+      final out = samplesOf(normalizePcm16Loudness(pcm(noise)));
+      expect(out.first, equals(300));
+    });
+  });
+
+  group('Backup ZIP Streaming Tests', () {
+    test('writeZipArchive and extractZipArchiveFlat round-trip files by basename', () async {
+      final tmp = await io.Directory.systemTemp.createTemp('sleepspeak_zip_test');
+      try {
+        final src = io.Directory(p.join(tmp.path, 'src'))..createSync();
+        final out = io.Directory(p.join(tmp.path, 'out'))..createSync();
+        final wav = io.File(p.join(src.path, 'sleep_123.wav'))..writeAsBytesSync(List<int>.generate(100000, (i) => i % 251));
+        final json = io.File(p.join(src.path, 'session_123.json'))..writeAsStringSync('{"id":"session_123"}');
+
+        final zipPath = p.join(tmp.path, 'backup.zip');
+        await writeZipArchive(zipPath, [json.path, wav.path]);
+        final written = await extractZipArchiveFlat(zipPath, out.path);
+
+        expect(written.map(p.basename), unorderedEquals(['sleep_123.wav', 'session_123.json']));
+        expect(io.File(p.join(out.path, 'sleep_123.wav')).readAsBytesSync(), equals(wav.readAsBytesSync()));
+        expect(io.File(p.join(out.path, 'session_123.json')).readAsStringSync(), equals('{"id":"session_123"}'));
+      } finally {
+        await tmp.delete(recursive: true);
+      }
     });
   });
 }

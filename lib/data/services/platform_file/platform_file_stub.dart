@@ -29,3 +29,7 @@ class AppDirectory {
 String getSystemTempPath() => '';
 
 List<double> parseWavNative(String filePath) => [];
+
+Future<void> writeZipArchive(String zipPath, List<String> filePaths, {void Function(int done, int total)? onFile}) async {}
+
+Future<List<String>> extractZipArchiveFlat(String zipPath, String outputDir) async => [];

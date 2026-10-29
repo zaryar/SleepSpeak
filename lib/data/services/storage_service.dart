@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'package:archive/archive.dart';
 import 'package:flutter/foundation.dart';
 import 'package:intl/intl.dart';
 import 'package:path/path.dart' as p;
@@ -338,51 +337,20 @@ class StorageService {
 
     onProgress?.call(0.05, 'Vorbereiten der Dateien...');
 
-    final archive = Archive();
-    final totalFiles = jsonFiles.length;
+    // Full-night WAVs are ~1 GB each, so they are streamed into the ZIP instead of read into memory
+    final filePaths = await getAllBackupFilePaths();
+    if (filePaths.isEmpty) return null;
 
-    for (int i = 0; i < jsonFiles.length; i++) {
-      final jf = jsonFiles[i];
-      try {
-        final currentFileNum = i + 1;
-        final progressRatio = 0.1 + (0.7 * (i / totalFiles));
-        onProgress?.call(progressRatio, 'Packe Aufnahme $currentFileNum von $totalFiles...');
-
-        final jsonBytes = await jf.readAsBytes();
-        final jsonFileName = p.basename(jf.path);
-        archive.addFile(ArchiveFile(jsonFileName, jsonBytes.length, jsonBytes));
-
-        final jsonString = await jf.readAsString();
-        final jsonMap = jsonDecode(jsonString) as Map<String, dynamic>;
-        final wavOriginalPath = jsonMap['filePath'] as String?;
-
-        if (wavOriginalPath != null) {
-          final wavFile = AppFile(wavOriginalPath);
-          if (await wavFile.exists()) {
-            final wavBytes = await wavFile.readAsBytes();
-            final wavFileName = p.basename(wavOriginalPath);
-            archive.addFile(ArchiveFile(wavFileName, wavBytes.length, wavBytes));
-          }
-        }
-      } catch (e) {
-        _logger.log('Error packing file ${jf.path}: $e');
-      }
-    }
-
-    if (archive.isEmpty) return null;
-
-    onProgress?.call(0.85, 'ZIP-Archiv wird komprimiert...');
-    final zipData = ZipEncoder().encode(archive);
-    if (zipData.isEmpty) return null;
-
-    onProgress?.call(0.95, 'Backup-Datei wird geschrieben...');
     final tempDir = await getTemporaryDirectory();
     final timestamp = DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
     final zipPath = p.join(tempDir.path, 'SleepSpeak_Backup_$timestamp.zip');
-    final zipFile = AppFile(zipPath);
-    await zipFile.writeAsBytes(zipData);
+
+    await writeZipArchive(zipPath, filePaths, onFile: (done, total) {
+      onProgress?.call(0.05 + 0.9 * (done / total), 'Packe Datei $done von $total...');
+    });
+
     onProgress?.call(1.0, 'Fertig!');
-    _logger.log('Created backup zip: $zipPath with ${archive.length} files');
+    _logger.log('Created backup zip: $zipPath with ${filePaths.length} files');
     return zipPath;
   }
 
@@ -498,18 +466,8 @@ class StorageService {
     final recDir = await _recordingsDir;
     if (recDir == null) return 0;
 
-    final bytes = await zipFile.readAsBytes();
-    final archive = ZipDecoder().decodeBytes(bytes);
+    await extractZipArchiveFlat(zipPath, recDir.path);
     int restoredCount = 0;
-
-    for (final file in archive) {
-      if (file.isFile) {
-        final filename = p.basename(file.name);
-        final targetPath = p.join(recDir.path, filename);
-        final targetFile = AppFile(targetPath);
-        await targetFile.writeAsBytes(file.content as List<int>);
-      }
-    }
 
     // Update filePath in every restored JSON to match local device directory
     final jsonFiles = recDir.listJsonFiles();
@@ -517,8 +475,11 @@ class StorageService {
       try {
         final jsonString = await jf.readAsString();
         final jsonMap = jsonDecode(jsonString) as Map<String, dynamic>;
-        final sessionId = jsonMap['id'] as String? ?? p.basenameWithoutExtension(jf.path);
-        final localWavPath = p.join(recDir.path, '$sessionId.wav');
+        // Recordings are named sleep_<ts>.wav while the session id is session_<ts>,
+        // so the WAV must be located via the basename of the original path.
+        final originalPath = jsonMap['filePath'] as String? ?? '';
+        if (originalPath.isEmpty) continue;
+        final localWavPath = p.join(recDir.path, p.basename(originalPath));
         final wavFile = AppFile(localWavPath);
 
         if (await wavFile.exists()) {
