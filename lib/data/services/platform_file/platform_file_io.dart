@@ -1,6 +1,8 @@
 import 'dart:io' as io;
 import 'dart:math';
 import 'dart:typed_data';
+import 'package:archive/archive_io.dart';
+import 'package:path/path.dart' as p;
 
 class AppFile {
   final io.File _file;
@@ -100,4 +102,43 @@ List<double> parseWavNative(String filePath) {
   }
 
   return history;
+}
+
+/// Streams [filePaths] into a ZIP archive at [zipPath] without loading them into memory.
+/// Entries are stored uncompressed (WAV barely compresses and deflating ~1 GB per night is slow).
+Future<void> writeZipArchive(String zipPath, List<String> filePaths, {void Function(int done, int total)? onFile}) async {
+  final encoder = ZipFileEncoder();
+  encoder.create(zipPath, level: ZipFileEncoder.store);
+  try {
+    for (int i = 0; i < filePaths.length; i++) {
+      await encoder.addFile(io.File(filePaths[i]), p.basename(filePaths[i]));
+      onFile?.call(i + 1, filePaths.length);
+    }
+  } finally {
+    await encoder.close();
+  }
+}
+
+/// Streams every file of the ZIP archive at [zipPath] into [outputDir], flattened to its basename.
+/// Returns the written paths.
+Future<List<String>> extractZipArchiveFlat(String zipPath, String outputDir) async {
+  final input = InputFileStream(zipPath);
+  final List<String> written = [];
+  try {
+    final archive = ZipDecoder().decodeStream(input);
+    for (final file in archive) {
+      if (!file.isFile) continue;
+      final target = p.join(outputDir, p.basename(file.name));
+      final output = OutputFileStream(target);
+      try {
+        file.writeContent(output);
+      } finally {
+        await output.close();
+      }
+      written.add(target);
+    }
+  } finally {
+    await input.close();
+  }
+  return written;
 }

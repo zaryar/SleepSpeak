@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -46,7 +47,7 @@ class GeminiAudioService {
 
   static const String defaultOracleUrl = '';
   static const String defaultOracleApiKey = '';
-  static const String defaultWhisperModel = 'base';
+  static const String defaultWhisperModel = 'small';
 
   static DateTime? _lastGeminiRequestTime;
 
@@ -96,10 +97,6 @@ class GeminiAudioService {
     final prefs = await SharedPreferences.getInstance();
     final stored = prefs.getString(_prefOracleApiKey);
     if (stored != null && stored.trim().isNotEmpty) {
-      if (stored == 'd36e140044d132b31c105a18ad55b05dcd8807ace0a83ac7784691c47d5b4cdf' && _envOracleApiKey.isNotEmpty) {
-        await prefs.setString(_prefOracleApiKey, _envOracleApiKey);
-        return _envOracleApiKey;
-      }
       return stored.trim();
     }
     if (_envOracleApiKey.isNotEmpty) {
@@ -250,7 +247,8 @@ class GeminiAudioService {
         filename: 'snippet.wav',
       ));
 
-      final streamedResponse = await request.send().timeout(const Duration(seconds: 15));
+      // Whisper runs on 4 ARM cores without GPU: up to ~20s per 10s clip, server-side limit is 45s
+      final streamedResponse = await request.send().timeout(const Duration(seconds: 60));
       final response = await http.Response.fromStream(streamedResponse);
 
       if (response.statusCode == 200) {
@@ -575,29 +573,7 @@ Antworte AUSSCHLIESSLICH als valides JSON-Objekt im Format:
     if (pcmData.isEmpty) return null;
 
     // --- Audio Gain Boost ("Lauter-Machen" für leises Flüstern & schwache Geräusche) ---
-    Uint8List finalPcm = pcmData;
-    if (bitsPerSample == 16 && pcmData.length >= 2) {
-      final pcmBd = ByteData.sublistView(pcmData);
-      final int numSamples = pcmData.length ~/ 2;
-      int maxPeak = 0;
-      for (int i = 0; i < numSamples; i++) {
-        final val = pcmBd.getInt16(i * 2, Endian.little).abs();
-        if (val > maxPeak) maxPeak = val;
-      }
-
-      // If audio is quiet (peak between -50 dBFS and -6 dBFS: 100 to 18000)
-      if (maxPeak > 50 && maxPeak < 18000) {
-        final double multiplier = (26000.0 / maxPeak).clamp(1.0, 16.0);
-        final boostedBytes = Uint8List(pcmData.length);
-        final boostedBd = ByteData.sublistView(boostedBytes);
-        for (int i = 0; i < numSamples; i++) {
-          final int raw = pcmBd.getInt16(i * 2, Endian.little);
-          final int boosted = (raw * multiplier).round().clamp(-32768, 32767);
-          boostedBd.setInt16(i * 2, boosted, Endian.little);
-        }
-        finalPcm = boostedBytes;
-      }
-    }
+    final Uint8List finalPcm = bitsPerSample == 16 ? normalizePcm16Loudness(pcmData) : pcmData;
 
     final int pcmLength = finalPcm.length;
 
@@ -625,4 +601,56 @@ Antworte AUSSCHLIESSLICH als valides JSON-Objekt im Format:
 
     return wavSnippet;
   }
+}
+
+/// Loudness-normalizes 16-bit PCM so that quiet sleep talking reaches the level
+/// the speech recognizer (Whisper + VAD) needs.
+///
+/// The gain is derived from the RMS of the whole snippet, not from its peak:
+/// a single click or bump otherwise limits the boost and whispered speech stays
+/// far below the VAD threshold (real case: speech at -48 dBFS RMS with a click
+/// peak at -27 dBFS was sent at ~-24 dBFS and classified as room noise).
+/// Peaks that would clip are compressed by a soft-knee limiter.
+@visibleForTesting
+Uint8List normalizePcm16Loudness(
+  Uint8List pcm, {
+  double targetRmsDb = -18.0,
+  double maxGain = 100.0,
+}) {
+  final int numSamples = pcm.length ~/ 2;
+  if (numSamples == 0) return pcm;
+
+  final src = ByteData.sublistView(pcm);
+  double sumSq = 0.0;
+  for (int i = 0; i < numSamples; i++) {
+    final int s = src.getInt16(i * 2, Endian.little);
+    sumSq += s * s;
+  }
+  final double rms = sqrt(sumSq / numSamples);
+  if (rms < 1.0) return pcm; // digital silence
+
+  final double targetRms = 32768.0 * pow(10, targetRmsDb / 20);
+  final double gain = (targetRms / rms).clamp(1.0, maxGain);
+  if (gain <= 1.0) return pcm;
+
+  const double knee = 0.5 * 32767;
+  const double ceiling = 0.95 * 32767;
+  final out = Uint8List(numSamples * 2);
+  final dst = ByteData.sublistView(out);
+  for (int i = 0; i < numSamples; i++) {
+    double y = src.getInt16(i * 2, Endian.little) * gain;
+    final double ay = y.abs();
+    if (ay > knee) {
+      final double limited = knee + (ceiling - knee) * _tanh((ay - knee) / (ceiling - knee));
+      y = y.isNegative ? -limited : limited;
+    }
+    dst.setInt16(i * 2, y.round(), Endian.little);
+  }
+  return out;
+}
+
+double _tanh(double x) {
+  if (x > 20) return 1.0; // exp() would overflow to Infinity -> NaN
+  final double e = exp(2 * x);
+  return (e - 1) / (e + 1);
 }
