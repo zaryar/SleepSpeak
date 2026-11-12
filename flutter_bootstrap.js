@@ -35,8 +35,19 @@ if (!window._flutter) {
 }
 _flutter.buildConfig = {"engineRevision":"5a2a6a42cce67f965cf540fcecf616faca624aa1","builds":[{"compileTarget":"dart2js","renderer":"canvaskit","mainJsPath":"main.dart.js"},{}]};
 
+// Render the app inside the iPhone frame defined in index.html.
 _flutter.loader.load({
+  config: {
+    hostElement: document.getElementById('app-host'),
+  },
   serviceWorkerSettings: {
-    serviceWorkerVersion: "1251240944" /* Flutter's service worker is deprecated and will be removed in a future Flutter release. */
-  }
+    serviceWorkerVersion: "1251240944",
+  },
+  onEntrypointLoaded: async function (engineInitializer) {
+    const appRunner = await engineInitializer.initializeEngine({
+      hostElement: document.getElementById('app-host'),
+    });
+    await appRunner.runApp();
+    document.body.classList.add('app-ready');
+  },
 });
